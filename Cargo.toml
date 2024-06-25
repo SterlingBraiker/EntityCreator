@@ -4,5 +4,5 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-rusqlite = "0.31.0"
+rusqlite = { version = "0.31.0", features = ["bundled", "blob"] }
 fltk = { version = "^1.4", features = ["fltk-bundled"] }
