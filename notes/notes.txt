@@ -1,0 +1,13 @@
+new entity
+
+entity properties
+	entity_base_def.entity_id
+	entity_base_def.name
+	entity_base_def.core_type
+	entity_base_def.sub_type
+	entity_composition_layers.id as composition_layer_id
+	
+
+new -> insert (auto increment) entity_id from entity_base_def
+modify -> update name, core_type, sub_type from entity_base_def
+modify -> 

@@ -38,15 +38,17 @@ enum SqlData {
 }
 
 
-fn main() -> Result<(), rusqlite::Error> {
+fn main(
+) -> Result<(), rusqlite::Error> {
 
     let fltk_app: app::App = app::App::default();
-    let mut wind: fltk::window::DoubleWindow = Window::new(100, 100, 400, 300, "My window");
-    let mut png_img: image::PngImage = image::PngImage::load("C:\\Users\\goomb\\Downloads\\Screenshot 2024-06-15 141905.png").unwrap();
-    let mut png_img_file = File::open("C:\\Users\\goomb\\Downloads\\Screenshot 2024-06-15 141905.png").unwrap();
-    let mut frame = Frame::default().with_size(360, 260).center_of(&wind);
+    let mut wind: fltk::window::DoubleWindow = Window::new(100, 100, 800, 600, "Entity Content Creator");
+    let mut frame = Frame::default().center_of(&wind);
 
-    let bytes: Vec<u8> = png_img_file.bytes().map(|x| x.unwrap()).collect();
+
+        
+    wind.end();
+    wind.show();
 
 
     let db = Connection::open_in_memory()?;
@@ -55,42 +57,6 @@ fn main() -> Result<(), rusqlite::Error> {
 
     db.execute("INSERT INTO test_table (content) VALUES (ZEROBLOB(242434))", [])?;
 
-    let row_id = db.last_insert_rowid();
-
-    let mut blob = db.blob_open(DatabaseName::Main, "test_table", "content", row_id, false)?;
-
-    //let bytes_written = blob.write(b"01234567").unwrap_or(0);
-
-    let bytes_written = blob.write(&png_img.to_rgb_data()[..]).unwrap_or(0);
-    println!("bytes written: {}", bytes_written);
-
-    blob.seek(SeekFrom::Start(0)).unwrap_or(0);
-
-    let mut buf = [0u8; 242434];
-
-    let bytes_read = blob.read(&mut buf[..]).unwrap_or(0);
-    println!("bytes read: {}", bytes_read);
-
-
-    println!("png img about to load");
-    let mut new_png_img = fltk::image::PngImage::from_data(&bytes[..]);
-    println!("png img loaded");
-
-    match new_png_img {
-        Ok(mut img) => {
-            frame.draw(move |f| { 
-                println!("frame drawing");
-                img.scale(f.w(), f.h(), true, true);
-                println!("frame scaled");
-                img.draw(f.x() + 40, f.y(), f.w(), f.h());
-                println!("frame drewed");
-            });
-        },
-        Err(_) => {},
-    }
-        
-    wind.end();
-    wind.show();
 
     fltk_app.run().unwrap();
 
@@ -165,3 +131,44 @@ fn query(
 
 }
 
+/* This entire function is just stripped prototype code (that worked) from 'fn main()'
+// This code won't work on its own, need to provide a reference to Fltk App and resolve the image file loads
+// as well as the img struct conversions
+fn load_image(
+) -> () {
+
+    let mut frame = Frame::default().with_size(360, 260).center_of(&wind);
+    let mut loaded_img: image::JpegImage = image::JpegImage::load("..\\test_data\\312-1.JPG").unwrap();
+    let mut new_img: image::BmpImage;
+    unsafe { new_img =  loaded_img.into_image::<image::BmpImage>(); }
+
+    let mut png_img_file = File::open("C:\\Users\\goomb\\Downloads\\Screenshot 2024-06-15 141905.png").unwrap();
+    let bytes: Vec<u8> = png_img_file.bytes().map(|x| x.unwrap()).collect();
+
+    let row_id = db.last_insert_rowid();
+
+    let mut blob = db.blob_open(DatabaseName::Main, "test_table", "content", row_id, false)?;
+
+    blob.seek(SeekFrom::Start(0)).unwrap_or(0);
+
+    let mut buf = [0u8; 242434];
+
+    let bytes_read = blob.read(&mut buf[..]).unwrap_or(0);
+    println!("bytes read: {}", bytes_read);
+
+
+    println!("png img about to load");
+    let mut new_png_img = fltk::image::PngImage::from_data(&bytes[..]);
+    println!("png img loaded");
+
+    frame.draw(move |f| { 
+        println!("frame drawing");
+        new_img.scale(f.w(), f.h(), true, true);
+        println!("frame scaled");
+        new_img.draw(f.x() + 40, f.y(), f.w(), f.h());
+        println!("frame drewed");
+    });
+
+
+}
+*/
