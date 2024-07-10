@@ -1,20 +1,33 @@
 use rusqlite::*;
 use std::io::{Write, Read, Seek, SeekFrom};
 use std::fs::File;
-use fltk::{prelude::*, window::Window, app, image, frame::Frame};
+use fltk::{
+    prelude::*, 
+    window::Window, 
+    app, 
+    group::Scroll,
+    tree::{ Tree, TreeReason },
+    input::Input,
+};
+
+struct AppContext{
+    fltk_app: fltk::app::App,
+    db: Connection,
+//    list_of_controls: Vec<i32>,
+}
 
 #[derive(Default)]
 struct RecordSet {
-    records: Vec<Records>,
+    records: Vec<Record>,
     headers: Headers,
 }
 
 
-struct Records {
+struct Record {
     fields: Vec<SqlData>,
 }
 
-impl Records {
+impl Record {
     fn new() -> Self {
         Self {
             fields: Vec::new(),
@@ -29,6 +42,9 @@ struct Headers {
 }
 
 
+const DB_PATH: &str = "C:\\Rust_Dev\\EntityCreator\\test_data\\cold_storage.db";
+
+
 enum SqlData {
     Null,
     Integer(i64),
@@ -37,39 +53,122 @@ enum SqlData {
     Blob(Vec<u8>),
 }
 
+impl ToString for SqlData {
+    fn to_string(
+        &self,
+    ) -> String {
+        match self {
+            SqlData::Null => String::new(),
+            SqlData::Integer(z) => z.to_string(),
+            SqlData::Real(z) => z.to_string(),
+            SqlData::Text(z) => z.to_string(),
+            SqlData::Blob(_) => String::new(),
+        }
+    }
+}
+
 
 fn main(
 ) -> Result<(), rusqlite::Error> {
+    let mut app: AppContext = AppContext {
+        fltk_app: app::App::default(),
+        db: Connection::open(DB_PATH).unwrap(),
+    };
+    let mut wind: fltk::window::DoubleWindow = Window::new(100, 100, 800, 600, "Entity Content Creator").with_id("main_window");
+    /*
+        self.fltk_windows.push(window::Window::default()
+        .with_id("sql_window")
+        .with_size(1280, 760)
+        .center_screen());
+     */
+    let mut tree: Tree = Tree::default().with_size(200, wind.height()).with_label("tree").with_id("tree_id");
+    
+    tree.set_callback_reason(TreeReason::Selected);
+    tree.set_callback(|t| {
+        println!("Selected an item");
+        match t.get_selected_items() {
+            Some(v) => {
+                    /* // fetch the label that was clicked on
+                    for y in v {
+                        println!("{}", y.label().unwrap());
+                    }
+                    */
+    
+                    // build out the UI to the right with appropriate amount of boxes
+                    // based on which label was clicked
+                    // ( CreateItem, CreateEntity, etc )
+                    
+                let mut previous_coordinates: Option<(i32, i32)> = None;
+    
+                for _ in 0..=3{
+    //                    let x: i32 = wind.children(); // this now will accurately get children count
+     //                   for y in 0..x {
+      //                      println!("child is {}", t.window().unwrap().child(y).unwrap().label());
+       //                 }
+                    add_input_to_window(&mut previous_coordinates);
+                }
+            },
+            None => {
+    /*                t.clear();
+                    let _ = load_db_into_tree(t);
+    */      },
+        }
+    });
+    tree.end();
+    let wind2: fltk::window::DoubleWindow = Window::new(
+        tree.x() + tree.width(),
+        tree.y(),
+        wind.width() - tree.width(),
+        wind.height(),
+        "Entity Content Creator").with_id("sub_window");
 
-    let fltk_app: app::App = app::App::default();
-    let mut wind: fltk::window::DoubleWindow = Window::new(100, 100, 800, 600, "Entity Content Creator");
-    let mut frame = Frame::default().center_of(&wind);
+    let scroll: Scroll = Scroll::default_fill() 
+        .with_id("scroll_group");
 
+    scroll.end();
+    wind2.end();
 
-        
     wind.end();
     wind.show();
-
-
-    let db = Connection::open_in_memory()?;
-
-    db.execute_batch("CREATE TABLE test_table (content BLOB);")?;
-
-    db.execute("INSERT INTO test_table (content) VALUES (ZEROBLOB(242434))", [])?;
-
-
-    fltk_app.run().unwrap();
-
+    
+    let _ = load_items_into_tree(&mut tree, Vec::from(["Entity", "Item", "Composition"]));
+    
+    app.fltk_app.run().unwrap();
+     
     Ok(())
 }
 
 
+fn load_db_into_tree(
+    tree: &mut Tree,
+) -> Result<()> {
+    let rs = query(
+        &Connection::open(DB_PATH).unwrap(),
+        "SELECT name FROM sqlite_schema WHERE type ='table' AND name NOT LIKE 'sqlite_%';",
+        &[]);
+    for x in rs.records {
+        for y in x.fields {
+            tree.add(&y.to_string()[..]);
+        }
+    }
+    Ok(())
+}
+
+fn load_items_into_tree(
+    tree: &mut Tree,
+    items: Vec<&str>,
+) -> Result<()> {
+    for x in items {
+        tree.add(x);
+    }
+    Ok(())
+}
+
 fn query(
-    sqlite_connection: Connection,
+    sqlite_connection: &Connection,
     query_str: &str,
     params: &[(&str, &dyn ToSql)],
 ) -> RecordSet {
-    
     let mut rs: RecordSet = RecordSet::default();
 
     let stmt: Result<CachedStatement, Error> = sqlite_connection.prepare_cached(query_str);
@@ -99,7 +198,7 @@ fn query(
             while let Some(r) = rows.next() {
                 match r {
                     Ok(e) => {
-                        let mut new_row: Records = Records::new();
+                        let mut new_row: Record = Record::new();
                         for ind in 0..e.len() {
 
                             // get each field in this row and put it in the gd_recordset
@@ -115,20 +214,34 @@ fn query(
                         rs.records.push(new_row);
                     },
                     Err(_) => {
-                        // godot_print!("no more records in the recordset!");
                     },
                 }
             }
-
         },
         Err(_) => { 
-            // godot_print!("statement failed to prepare");
         },
     };
- 
-    // rs.gd_recordset
-    rs
 
+    rs
+}
+
+fn add_input_to_window(
+    datum: &mut Option<(i32, i32)>,
+) -> () {
+    //         fltk::app::widget_from_id::<fltk::group::Flex>("record_grid_group").as_ref().unwrap().end();
+    let mut widget = fltk::app::widget_from_id::<fltk::group::Scroll>("scroll_group");
+    widget.as_mut().unwrap().begin();
+    let coords = match datum.as_ref() {
+        Some(x) => x.clone(),
+        None => (0, 0),
+    };
+    let input_one: Input = Input::default().with_pos(coords.0, coords.1 + 20).with_size(80, 20).with_label("Test");
+    println!("x is {}, y is {}", input_one.x(), input_one.y());
+    widget.as_mut().unwrap().add(&input_one);
+    println!("scroll size h: {}, w: {} ", widget.as_mut().unwrap().height(), widget.as_mut().unwrap().width());
+    *datum = Some((coords.0, coords.1 + input_one.height()));
+    widget.as_mut().unwrap().end();
+    ()
 }
 
 /* This entire function is just stripped prototype code (that worked) from 'fn main()'
@@ -172,3 +285,68 @@ fn load_image(
 
 }
 */
+
+/*
+impl AppContext {
+    fn construct(&mut self) -> () {
+        let mut wind: fltk::window::DoubleWindow = Window::new(100, 100, 800, 600, "Entity Content Creator");
+    /*
+        self.fltk_windows.push(window::Window::default()
+        .with_id("sql_window")
+        .with_size(1280, 760)
+        .center_screen());
+     */
+        let mut tree: Tree = Tree::default().with_size(200, wind.height()).with_label("tree").with_id("tree_id");
+    
+        tree.set_callback_reason(TreeReason::Selected);
+        tree.set_callback(|t| {
+            println!("Selected an item");
+            match t.get_selected_items() {
+                Some(v) => {
+                    /* // fetch the label that was clicked on
+                    for y in v {
+                        println!("{}", y.label().unwrap());
+                    }
+                    */
+    
+                    // build out the UI to the right with appropriate amount of boxes
+                    // based on which label was clicked
+                    // ( CreateItem, CreateEntity, etc )
+                    
+                    let mut previous_coordinates: Option<(i32, i32)> = None;
+                    let mut wind = t.window().unwrap();
+    
+                    for _ in 0..=3{
+    //                    let x: i32 = wind.children(); // this now will accurately get children count
+     //                   for y in 0..x {
+      //                      println!("child is {}", t.window().unwrap().child(y).unwrap().label());
+       //                 }
+                        add_input_to_window(&mut wind,&mut previous_coordinates);
+                    }
+                },
+                None => {
+    /*                t.clear();
+                    let _ = load_db_into_tree(t);
+    */            },
+            }
+        });
+        tree.end();
+    
+        let mut scroll: Scroll = Scroll::new(
+            tree.x() + tree.width(),
+            tree.y(),
+            wind.width() - tree.width(),
+            wind.height(),
+            "scroll")
+            .with_label("scroll");
+        wind.end();
+        wind.show();
+    
+        let _ = load_items_into_tree(&mut tree, Vec::from(["Entity", "Item", "Composition"]));
+    
+        app.fltk_app.run().unwrap();
+        
+    
+    }
+}
+    */
