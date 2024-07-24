@@ -1,19 +1,195 @@
 use rusqlite::*;
-use std::io::{Write, Read, Seek, SeekFrom};
-use std::fs::File;
 use fltk::{
     prelude::*, 
-    window::Window, 
-    app, 
+    window::{ Window, DoubleWindow },
+    { app, 
+        app::{ widget_from_id,
+            Sender,
+            Receiver,
+            channel,
+        }
+    }, 
     group::Scroll,
-    tree::{ Tree, TreeReason },
+    tree::{ Tree, TreeItem, TreeReason },
     input::Input,
+    button::Button,
 };
+
+const CREATION_CATEGORIES: [&str; 3] = [ "Mob", "Item", "Static" ];
+
 
 struct AppContext{
     fltk_app: fltk::app::App,
     db: Connection,
-//    list_of_controls: Vec<i32>,
+    sender: Sender<Message>,
+    receiver: Receiver<Message>,
+}
+
+#[derive(Clone)]
+pub enum Message {
+    TreeSelection(String),
+    ClearSubWindow,
+}
+
+
+impl AppContext {
+    fn new() -> Self {
+        let (a, b) = channel::<Message>();
+        Self {
+            fltk_app: app::App::default(),
+            db: Connection::open(DB_PATH).unwrap(),
+            sender: a,
+            receiver: b,
+        }
+    }
+
+
+    fn construct(&mut self) -> () {
+
+        // create main window
+        Window::default()
+            .with_size(800, 600)
+            .center_screen()
+            .with_label("Entity Content Creator")
+            .with_id("main_window");
+
+        // create a tree on the left to allow selecting creation templates
+        Tree::default()
+            .with_size(200, widget_from_id::<DoubleWindow>("main_window")
+                .unwrap()
+                .height()
+            )
+            .with_label("tree")
+            .with_id("main_window_tree");
+
+        println!("{:?}", widget_from_id::<Tree>("main_window_tree").unwrap().select_mode());
+
+        // requires explicit 'end()' call to any 'group' types so we don't nest within this object
+        widget_from_id::<Tree>("main_window_tree")
+            .unwrap()
+            .end();
+
+        // create 2nd window that houses the dynamic rebuildable widgets - right side of GUI
+        Window::default()
+            .with_size( 
+                {
+                    let wind: DoubleWindow = widget_from_id::<DoubleWindow>("main_window")
+                        .unwrap();
+                    let tree: Tree = widget_from_id::<Tree>("main_window_tree")
+                        .unwrap();
+                    wind.width() - tree.width()
+                },
+                widget_from_id::<DoubleWindow>("main_window")
+                    .unwrap()
+                    .height()
+            )
+            .with_pos(
+                {
+                    let tree: Tree = widget_from_id::<Tree>("main_window_tree").unwrap();
+                    let x = tree.x() + tree.width();
+                    x
+                },
+                widget_from_id::<Tree>("main_window_tree").unwrap().y()
+            )
+            .with_label("Entity Content Creator")
+            .with_id("sub_window");
+    
+        let mut scroll: Scroll = Scroll::default()
+            .with_size(
+                widget_from_id::<DoubleWindow>("sub_window").unwrap().width(),
+                widget_from_id::<DoubleWindow>("sub_window").unwrap().height() - 30)
+            .with_id("main_window_sub_window_scroll");
+        scroll.set_frame(fltk::enums::FrameType::DownBox);
+        scroll.end();
+
+        Button::default()
+            .with_size(80, 20)
+            .below_of(&scroll, 3)
+            .with_id("create_new_button")
+            .with_label("Create New");
+
+        Button::default()
+            .with_size(80, 20)
+            .right_of(&widget_from_id::<Button>("create_new_button").unwrap(), 3)
+            .with_id("setting_button")
+            .with_label("Settings");
+        
+
+        // done adding to the right side of the GUI
+        widget_from_id::<DoubleWindow>("sub_window").unwrap().end();
+    
+        // done adding to the main window
+        widget_from_id::<DoubleWindow>("main_window").unwrap().end();
+
+        let _ = self.load_items_into_tree(Vec::from(CREATION_CATEGORIES));
+
+        let tree_sender: Sender<Message> = self.sender.clone();
+
+        widget_from_id::<Tree>("main_window_tree")
+            .unwrap()
+            .set_callback({move |t2| {
+                let t: Tree = t2.clone();
+                match t.callback_reason() {
+                    TreeReason::None => {},
+                    TreeReason::Selected => { 
+                        tree_selected_callback(&tree_sender, &t);
+                    },
+                    TreeReason::Deselected => { },
+                    TreeReason::Reselected => {},
+                    TreeReason::Opened => {},
+                    TreeReason::Closed => {},
+                    TreeReason::Dragged => {},
+                }
+            }
+        });
+
+        ()
+    }
+
+/*
+    fn gateway_to_fill_sub_window(
+        &mut self,
+        mut previous_coordinates: Option<(i32, i32)>,
+        selection: String,
+    ) -> () {
+    
+    
+        self.add_input_to_window(&mut previous_coordinates);
+        ()
+    }
+ */
+
+    fn event_loop(&mut self) -> Result<(), ()> {
+        while self.fltk_app.wait() {
+            match self.receiver.recv() {
+                Some(Message::TreeSelection(s)) => {
+                    match_tree_selection(s);
+                },
+                Some(Message::ClearSubWindow) => {
+                    clear_sub_window_scroll();
+                }
+                None => {
+                    ()
+                },
+            }
+        }
+
+        Ok(())
+    }
+
+    fn load_items_into_tree(
+        &self,
+        items: Vec<&str>,
+    ) -> Result<()> {
+        for x in items {
+            widget_from_id::<Tree>("main_window_tree")
+                .as_mut()
+                .unwrap()
+                .add(x);
+        }
+        Ok(())
+    }
+
 }
 
 #[derive(Default)]
@@ -69,76 +245,13 @@ impl ToString for SqlData {
 
 
 fn main(
-) -> Result<(), rusqlite::Error> {
-    let mut app: AppContext = AppContext {
-        fltk_app: app::App::default(),
-        db: Connection::open(DB_PATH).unwrap(),
-    };
-    let mut wind: fltk::window::DoubleWindow = Window::new(100, 100, 800, 600, "Entity Content Creator").with_id("main_window");
-    /*
-        self.fltk_windows.push(window::Window::default()
-        .with_id("sql_window")
-        .with_size(1280, 760)
-        .center_screen());
-     */
-    let mut tree: Tree = Tree::default().with_size(200, wind.height()).with_label("tree").with_id("tree_id");
-    
-    tree.set_callback_reason(TreeReason::Selected);
-    tree.set_callback(|t| {
-        println!("Selected an item");
-        match t.get_selected_items() {
-            Some(v) => {
-                    /* // fetch the label that was clicked on
-                    for y in v {
-                        println!("{}", y.label().unwrap());
-                    }
-                    */
-    
-                    // build out the UI to the right with appropriate amount of boxes
-                    // based on which label was clicked
-                    // ( CreateItem, CreateEntity, etc )
-                    
-                let mut previous_coordinates: Option<(i32, i32)> = None;
-    
-                for _ in 0..=3{
-    //                    let x: i32 = wind.children(); // this now will accurately get children count
-     //                   for y in 0..x {
-      //                      println!("child is {}", t.window().unwrap().child(y).unwrap().label());
-       //                 }
-                    add_input_to_window(&mut previous_coordinates);
-                }
-            },
-            None => {
-    /*                t.clear();
-                    let _ = load_db_into_tree(t);
-    */      },
-        }
-    });
-    tree.end();
-    let wind2: fltk::window::DoubleWindow = Window::new(
-        tree.x() + tree.width(),
-        tree.y(),
-        wind.width() - tree.width(),
-        wind.height(),
-        "Entity Content Creator").with_id("sub_window");
+) -> Result<(), ()> {
 
-    let scroll: Scroll = Scroll::default_fill() 
-        .with_id("scroll_group");
-
-    scroll.end();
-    wind2.end();
-
-    wind.end();
-    wind.show();
-    
-    let _ = load_items_into_tree(&mut tree, Vec::from(["Entity", "Item", "Composition"]));
-    
-    app.fltk_app.run().unwrap();
-     
+    entry_point()?;
     Ok(())
 }
 
-
+/*
 fn load_db_into_tree(
     tree: &mut Tree,
 ) -> Result<()> {
@@ -153,16 +266,8 @@ fn load_db_into_tree(
     }
     Ok(())
 }
+ */
 
-fn load_items_into_tree(
-    tree: &mut Tree,
-    items: Vec<&str>,
-) -> Result<()> {
-    for x in items {
-        tree.add(x);
-    }
-    Ok(())
-}
 
 fn query(
     sqlite_connection: &Connection,
@@ -204,6 +309,7 @@ fn query(
                             // get each field in this row and put it in the gd_recordset
                             // converting each SQLite value to a Godot equivalent
                             match &e[ind] {
+
                                 types::Value::Null =>                     { new_row.fields.push( SqlData::Null ) },
                                 types::Value::Integer(v_i64) =>     { new_row.fields.push( SqlData::Integer(v_i64.clone()) ) },
                                 types::Value::Real(v_f64) =>        { new_row.fields.push( SqlData::Real(v_f64.clone()) ) },
@@ -225,24 +331,7 @@ fn query(
     rs
 }
 
-fn add_input_to_window(
-    datum: &mut Option<(i32, i32)>,
-) -> () {
-    //         fltk::app::widget_from_id::<fltk::group::Flex>("record_grid_group").as_ref().unwrap().end();
-    let mut widget = fltk::app::widget_from_id::<fltk::group::Scroll>("scroll_group");
-    widget.as_mut().unwrap().begin();
-    let coords = match datum.as_ref() {
-        Some(x) => x.clone(),
-        None => (0, 0),
-    };
-    let input_one: Input = Input::default().with_pos(coords.0, coords.1 + 20).with_size(80, 20).with_label("Test");
-    println!("x is {}, y is {}", input_one.x(), input_one.y());
-    widget.as_mut().unwrap().add(&input_one);
-    println!("scroll size h: {}, w: {} ", widget.as_mut().unwrap().height(), widget.as_mut().unwrap().width());
-    *datum = Some((coords.0, coords.1 + input_one.height()));
-    widget.as_mut().unwrap().end();
-    ()
-}
+
 
 /* This entire function is just stripped prototype code (that worked) from 'fn main()'
 // This code won't work on its own, need to provide a reference to Fltk App and resolve the image file loads
@@ -286,67 +375,208 @@ fn load_image(
 }
 */
 
-/*
-impl AppContext {
-    fn construct(&mut self) -> () {
-        let mut wind: fltk::window::DoubleWindow = Window::new(100, 100, 800, 600, "Entity Content Creator");
-    /*
-        self.fltk_windows.push(window::Window::default()
-        .with_id("sql_window")
-        .with_size(1280, 760)
-        .center_screen());
-     */
-        let mut tree: Tree = Tree::default().with_size(200, wind.height()).with_label("tree").with_id("tree_id");
+fn entry_point() -> Result<(), ()> {
+    let mut f: AppContext = AppContext::new();
     
-        tree.set_callback_reason(TreeReason::Selected);
-        tree.set_callback(|t| {
-            println!("Selected an item");
-            match t.get_selected_items() {
-                Some(v) => {
-                    /* // fetch the label that was clicked on
-                    for y in v {
-                        println!("{}", y.label().unwrap());
-                    }
-                    */
+    f.construct();
+
+    let mut mainwindow: Window = widget_from_id::<DoubleWindow>("main_window").unwrap();
+    mainwindow.show();
+
+    f.event_loop()
+}
+
+
+fn match_tree_selection(
+    s: String,
+) -> () {
+    println!("match tree selection");
+    match &s[..] {
+        "Mob" => build_mob_gui(),
+        "Item" => build_item_gui(),
+        "Static" => build_static_gui(),
+        _ => {},
+    };
+
+    ()
+}
+
+fn build_mob_gui(
+) -> () {
     
-                    // build out the UI to the right with appropriate amount of boxes
-                    // based on which label was clicked
-                    // ( CreateItem, CreateEntity, etc )
-                    
-                    let mut previous_coordinates: Option<(i32, i32)> = None;
-                    let mut wind = t.window().unwrap();
+    let scroll: Option<Scroll> = widget_from_id::<Scroll>("main_window_sub_window_scroll");
     
-                    for _ in 0..=3{
-    //                    let x: i32 = wind.children(); // this now will accurately get children count
-     //                   for y in 0..x {
-      //                      println!("child is {}", t.window().unwrap().child(y).unwrap().label());
-       //                 }
-                        add_input_to_window(&mut wind,&mut previous_coordinates);
-                    }
-                },
-                None => {
-    /*                t.clear();
-                    let _ = load_db_into_tree(t);
-    */            },
+    match scroll {
+        Some(mut s) => {
+            let mut previous_coordinates: Option<(i32, i32)> = None;
+
+            let mut child_text_boxes: Vec<String> = Vec::new();
+
+            child_text_boxes.push(add_input_to_scroll(&mut s, &mut previous_coordinates, "Entity ID", "entity_id"));
+            child_text_boxes.push(add_input_to_scroll(&mut s, &mut previous_coordinates, "Entity Name", "entity_name"));
+
+            
+            // make a bunch of test children
+            for x in 0..100 {
+                let y: &str = &x.to_string()[..];
+                child_text_boxes.push(add_input_to_scroll(&mut s, &mut previous_coordinates, y, y ));
             }
-        });
-        tree.end();
+
+            autolayout_subwindow_scrollbox_gui(child_text_boxes);
+
+            s.redraw();
+        },
+        None => (),
+    }
+    ()
+}
+
+fn build_item_gui(
+) -> () {
+    let scroll: Option<Scroll> = widget_from_id::<Scroll>("main_window_sub_window_scroll");
     
-        let mut scroll: Scroll = Scroll::new(
-            tree.x() + tree.width(),
-            tree.y(),
-            wind.width() - tree.width(),
-            wind.height(),
-            "scroll")
-            .with_label("scroll");
-        wind.end();
-        wind.show();
+    match scroll {
+        Some(mut s) => {
+            let mut previous_coordinates: Option<(i32, i32)> = None;
+            
+            let mut child_text_boxes: Vec<String> = Vec::new();
+
+            child_text_boxes.push(add_input_to_scroll(&mut s, &mut previous_coordinates, "Entity ID", "entity_id"));
+            child_text_boxes.push(add_input_to_scroll(&mut s, &mut previous_coordinates, "Entity Name", "entity_name"));
+            child_text_boxes.push(add_input_to_scroll(&mut s, &mut previous_coordinates, "Item Type", "item_type"));
+
+            autolayout_subwindow_scrollbox_gui(child_text_boxes);
+
+            s.redraw();
+        },
+        None => (),
+    }
     
-        let _ = load_items_into_tree(&mut tree, Vec::from(["Entity", "Item", "Composition"]));
-    
-        app.fltk_app.run().unwrap();
+    ()
+}
+
+fn build_static_gui(
+) -> () {
         
+    match widget_from_id::<Scroll>("main_window_sub_window_scroll") {
+        Some(mut s) => {
+            let mut previous_coordinates: Option<(i32, i32)> = None;
+
+            let mut child_text_boxes: Vec<String> = Vec::new();
+
+            child_text_boxes.push(add_input_to_scroll(&mut s, &mut previous_coordinates, "Entity ID", "entity_id"));
+            child_text_boxes.push(add_input_to_scroll(&mut s, &mut previous_coordinates, "Entity Name", "entity_name"));
+
+            autolayout_subwindow_scrollbox_gui(child_text_boxes);
+
+            s.redraw();
+        },
+        None => (),
+    }
     
+    ()
+}
+
+fn autolayout_subwindow_scrollbox_gui(
+    child_boxes: Vec<String>,
+) -> () {
+
+    let mut largest: i32 = 0;
+    
+    for x in &child_boxes {
+        find_largest_label(&mut largest, widget_from_id::<Input>(&x[..]).unwrap().measure_label())
+    }
+
+    for x in &child_boxes {
+        let mut child: Input = widget_from_id::<Input>(&x[..]).unwrap();
+        child.set_pos(largest + 3, child.y());
+    }
+
+    ()
+}
+
+fn add_input_to_scroll(
+    widget: &mut Scroll,
+    datum: &mut Option<(i32, i32)>,
+    label: &str,
+    id: &str,
+) -> String {
+    let coords: (i32, i32) = match datum.as_ref() {
+        Some(x) => x.clone(),
+        None => (0, 0),
+    };
+
+    widget.begin();
+
+    let mut input_one: Input = Input::default()
+        .with_size(180, 30)
+        .with_pos(coords.0, coords.1)
+        .with_label(label)
+        .with_id(id);
+
+    // align X to the previous input + the label width + padding from the edge of the scrollbox
+    input_one.set_pos(coords.0 + input_one.measure_label().0 + 3, coords.1 + input_one.height());
+
+    widget.add(&input_one);    
+    widget.end();
+
+    *datum = Some((coords.0, coords.1 + input_one.height()));
+
+    String::from(id)
+}
+
+fn clear_sub_window_scroll(
+) -> () {
+    let scroll: Option<Scroll> = widget_from_id::<Scroll>("main_window_sub_window_scroll");
+    match scroll {
+        Some(mut w) => {
+            w.clear();
+            w.redraw();
+        },
+        None => {},
+    }
+
+    ()
+}
+
+fn find_largest_label(
+    largest: &mut i32,
+    label: (i32, i32),
+) -> () {
+    if *largest < label.0 {
+        *largest = label.0;
+    }
+
+    ()
+}
+
+fn slice_end_of_string(
+    s: String,
+) -> String {
+    let mut x: Vec<&str> = s.split("/").collect();
+    
+    match x.pop() {
+        Some(y) => y.to_string(),
+        None => String::new(),
     }
 }
-    */
+
+fn tree_selected_callback(
+    tree_sender: &Sender<Message>,
+    t: &Tree,
+) -> () {
+    tree_sender.send(Message::ClearSubWindow);
+        let selected_item: Option<TreeItem> = t
+            .find_clicked(false);
+
+        match selected_item {
+            Some(tree_item) => {
+                match t.item_pathname(&tree_item) {
+                    Ok(t) => tree_sender.send(Message::TreeSelection(slice_end_of_string(t))),
+                    Err(_) => { },
+                }
+            },
+            None => { },
+        };
+        ()
+}
