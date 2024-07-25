@@ -13,9 +13,12 @@ use fltk::{
     tree::{ Tree, TreeItem, TreeReason },
     input::Input,
     button::Button,
+    enums::Event,
 };
 
+
 const CREATION_CATEGORIES: [&str; 3] = [ "Mob", "Item", "Static" ];
+const DB_PATH: &str = ".\\test_data\\cold_storage.db";
 
 
 struct AppContext{
@@ -127,18 +130,23 @@ impl AppContext {
 
         widget_from_id::<Tree>("main_window_tree")
             .unwrap()
-            .set_callback({move |t2| {
-                let t: Tree = t2.clone();
+            .set_callback({move |t| {
                 match t.callback_reason() {
-                    TreeReason::None => {},
+                    TreeReason::None => {
+                    },
                     TreeReason::Selected => { 
                         tree_selected_callback(&tree_sender, &t);
                     },
-                    TreeReason::Deselected => { },
-                    TreeReason::Reselected => {},
-                    TreeReason::Opened => {},
-                    TreeReason::Closed => {},
-                    TreeReason::Dragged => {},
+                    TreeReason::Deselected => { 
+                    },
+                    TreeReason::Reselected => {
+                    },
+                    TreeReason::Opened => {
+                    },
+                    TreeReason::Closed => {
+                    },
+                    TreeReason::Dragged => {
+                    },
                 }
             }
         });
@@ -161,6 +169,10 @@ impl AppContext {
 
     fn event_loop(&mut self) -> Result<(), ()> {
         while self.fltk_app.wait() {
+
+//            let x: Event = app::event();
+//            println!("{}", x);
+
             match self.receiver.recv() {
                 Some(Message::TreeSelection(s)) => {
                     match_tree_selection(s);
@@ -168,9 +180,7 @@ impl AppContext {
                 Some(Message::ClearSubWindow) => {
                     clear_sub_window_scroll();
                 }
-                None => {
-                    ()
-                },
+                None => { },
             }
         }
 
@@ -216,9 +226,6 @@ struct Headers {
     column_names: Vec<String>,
     column_count: usize,
 }
-
-
-const DB_PATH: &str = "C:\\Rust_Dev\\EntityCreator\\test_data\\cold_storage.db";
 
 
 enum SqlData {
@@ -525,6 +532,7 @@ fn add_input_to_scroll(
     String::from(id)
 }
 
+
 fn clear_sub_window_scroll(
 ) -> () {
     let scroll: Option<Scroll> = widget_from_id::<Scroll>("main_window_sub_window_scroll");
@@ -539,6 +547,7 @@ fn clear_sub_window_scroll(
     ()
 }
 
+
 fn find_largest_label(
     largest: &mut i32,
     label: (i32, i32),
@@ -549,6 +558,7 @@ fn find_largest_label(
 
     ()
 }
+
 
 fn slice_end_of_string(
     s: String,
@@ -561,22 +571,25 @@ fn slice_end_of_string(
     }
 }
 
+
 fn tree_selected_callback(
     tree_sender: &Sender<Message>,
     t: &Tree,
 ) -> () {
-    tree_sender.send(Message::ClearSubWindow);
-        let selected_item: Option<TreeItem> = t
-            .find_clicked(false);
 
-        match selected_item {
-            Some(tree_item) => {
-                match t.item_pathname(&tree_item) {
-                    Ok(t) => tree_sender.send(Message::TreeSelection(slice_end_of_string(t))),
-                    Err(_) => { },
-                }
-            },
-            None => { },
-        };
-        ()
+    clear_sub_window_scroll();
+
+    match t.callback_item() {
+        Some(tree_item) => {
+            match t.item_pathname( &tree_item ) {
+                Ok( t ) => {
+                    tree_sender.send( Message::TreeSelection( slice_end_of_string( t ) ) );
+                },
+                Err( _ ) => { },
+            }
+        },
+        None => { },
+    };
+
+    ()
 }
