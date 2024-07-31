@@ -190,14 +190,18 @@ impl AppContext {
     fn load_items_into_tree(
         &self,
         items: Vec<&str>,
-    ) -> Result<()> {
+    ) -> () {
+        let mut t: Option<Tree> = widget_from_id::<Tree>("main_window_tree");
+
         for x in items {
-            widget_from_id::<Tree>("main_window_tree")
-                .as_mut()
-                .unwrap()
-                .add(x);
+
+            match t.as_mut() {
+                Some(t) => {
+                    t.add(x);
+                },
+                None => { },
+            }
         }
-        Ok(())
     }
 
 }
