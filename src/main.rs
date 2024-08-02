@@ -13,7 +13,6 @@ use fltk::{
     tree::{ Tree, TreeItem, TreeReason },
     input::Input,
     button::Button,
-    enums::Event,
 };
 
 
@@ -125,6 +124,21 @@ impl AppContext {
         widget_from_id::<DoubleWindow>("main_window").unwrap().end();
 
         let _ = self.load_items_into_tree(Vec::from(CREATION_CATEGORIES));
+        
+        let mut tree: Option<Tree> = widget_from_id::<Tree>("main_window_tree");
+        match t.as_mut() {
+            Some(t) => {
+                for x in 0..=20 {
+            
+                    let t: TreeItem = TreeItem::new(&t, &x.to_string()[..]);
+        
+                    add_child_treeitem(t, p, &tree);
+                }        
+
+            },
+            None => { },
+        }
+    
 
         let tree_sender: Sender<Message> = self.sender.clone();
 
@@ -169,9 +183,6 @@ impl AppContext {
 
     fn event_loop(&mut self) -> Result<(), ()> {
         while self.fltk_app.wait() {
-
-//            let x: Event = app::event();
-//            println!("{}", x);
 
             match self.receiver.recv() {
                 Some(Message::TreeSelection(s)) => {
@@ -596,4 +607,15 @@ fn tree_selected_callback(
     };
 
     ()
+}
+
+
+fn add_child_treeitem(
+    item: TreeItem,
+    parent: TreeItem,
+    tree: Tree,
+) -> Result<(), ()> {
+
+    tree.add(item.path);
+    Ok(())
 }
