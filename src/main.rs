@@ -1,10 +1,11 @@
 use fltk::{
     button::Button,
+    draw,
     enums::{Color, FrameType},
     group::{Pack, Scroll},
     input::Input,
     prelude::*,
-    tree::{Tree, TreeItem, TreeItemDrawMode, TreeReason},
+    tree::{Tree, TreeItem, TreeReason},
     window::{DoubleWindow, Window},
     {
         app,
@@ -64,7 +65,7 @@ impl AppContext {
                     .height(),
             )
             .with_id("main_window_tree");
-        tree_object.set_item_draw_mode(TreeItemDrawMode::LabelAndWidget);
+
         tree_object.set_show_root(false);
         // requires explicit 'end()' call to any 'group' types so we don't nest within this object
         tree_object.end();
@@ -690,22 +691,51 @@ fn build_out_creation_categories() -> () {
             let count_of_children: i32 = tree_root.children();
             for x in 0..count_of_children {
                 let child: TreeItem = tree_root.child(x).unwrap();
-                let new_tree_item: TreeItem = TreeItem::new(&tree, "ID");
+                let mut new_tree_item: TreeItem = TreeItem::new(&tree, "ID");
+
+                new_tree_item.draw_item_content(|ti, render| {
+                    println!("drawing custom item content");
+                    let dims: (i32, i32, i32, i32) =
+                        (ti.label_x(), ti.label_y(), ti.label_w(), ti.label_h());
+                    // If the widget is visible 'render'
+                    if render {
+                        match ti.try_widget() {
+                            Some(pack) => {
+                                // fetch the nested widget out of TreeItem and cast it to a Pack
+                                let mut pack: Pack = unsafe { pack.into_widget::<Pack>() };
+                                pack.set_pos(dims.0, dims.1);
+                                pack.set_size(dims.2, dims.3);
+
+                                let mut dims: (i32, i32, i32, i32) =
+                                    (pack.x(), pack.y(), pack.w(), pack.h());
+                                pack.set_color(Color::Gray0);
+
+                                for i in 0..pack.children() {
+                                    match pack.child(i) {
+                                        Some(mut child) => {
+                                            child.set_pos(dims.0, dims.1);
+                                            child.set_size(dims.2 - 100, (dims.3 / 2));
+                                            dims.1 += dims.3;
+                                        }
+                                        None => {}
+                                    }
+                                }
+                            }
+                            None => {}
+                        }
+                    };
+                    let (label_w, _): (i32, i32) = draw::measure(&ti.label().unwrap()[..], true);
+                    return dims.0 + label_w;
+                });
+
                 let mut new_path: String = child.label().unwrap();
                 new_path.push_str("/");
                 new_path.push_str("ID");
 
                 match tree.add_item(&new_path, &new_tree_item) {
                     Some(mut ti) => {
-                        println!(
-                            "before x {}, y {}, w {}, h {}",
-                            ti.label_x(),
-                            ti.label_y(),
-                            ti.label_w(),
-                            ti.label_h()
-                        );
-
                         ti.set_label_size(ti.label_size() * 2);
+
                         let mut hg: Pack = Pack::new(
                             ti.label_x(),
                             ti.label_h(),
@@ -715,34 +745,12 @@ fn build_out_creation_categories() -> () {
                         );
 
                         hg.set_frame(FrameType::ThinUpFrame);
-                        hg.set_color(Color::Black);
 
-                        hg.set_spacing(4);
+                        hg.add(&Input::new(hg.x(), hg.y(), hg.width(), hg.height(), ""));
 
-                        hg.add(&Button::new(
-                            hg.x(),
-                            hg.y(),
-                            hg.width(),
-                            hg.height(),
-                            "Test button",
-                        ));
-                        hg.add(&Button::new(
-                            hg.x(),
-                            hg.y(),
-                            hg.width(),
-                            hg.height(),
-                            "Test button 2",
-                        ));
-                        //                        hg.auto_layout();
+                        hg.add(&Input::new(hg.x(), hg.y(), hg.width(), hg.height(), ""));
                         hg.end();
                         ti.set_widget(&hg);
-                        println!(
-                            "after x {}, y {}, w {}, h {}",
-                            ti.label_x(),
-                            ti.label_y(),
-                            ti.label_w(),
-                            ti.label_h()
-                        );
                     }
                     None => {
                         println!("Failed to add tree item");
