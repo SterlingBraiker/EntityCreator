@@ -1,26 +1,24 @@
-use rusqlite::*;
 use fltk::{
-    prelude::*, 
-    window::{ Window, DoubleWindow },
-    { app, 
-        app::{ widget_from_id,
-            Sender,
-            Receiver,
-            channel,
-        }
-    }, 
-    group::Scroll,
-    tree::{ Tree, TreeItem, TreeReason },
-    input::Input,
     button::Button,
+    enums::{Color, FrameType},
+    group::{Pack, Scroll},
+    input::Input,
+    prelude::*,
+    tree::{Tree, TreeItem, TreeItemDrawMode, TreeReason},
+    window::{DoubleWindow, Window},
+    {
+        app,
+        app::{channel, widget_from_id, Receiver, Sender},
+    },
 };
+use rusqlite::*;
+use std::env::current_dir;
+use std::path::PathBuf;
 
+const CREATION_CATEGORIES: [&str; 3] = ["Mob", "Item", "Static"];
+const DB_PATH: &str = "cold_storage.db";
 
-const CREATION_CATEGORIES: [&str; 3] = [ "Mob", "Item", "Static" ];
-const DB_PATH: &str = ".\\test_data\\cold_storage.db";
-
-
-struct AppContext{
+struct AppContext {
     fltk_app: fltk::app::App,
     db: Connection,
     sender: Sender<Message>,
@@ -33,21 +31,23 @@ pub enum Message {
     ClearSubWindow,
 }
 
-
 impl AppContext {
     fn new() -> Self {
+        let mut db_path = locate_cold_storage();
+
+        db_path.push(DB_PATH);
+
         let (a, b) = channel::<Message>();
+
         Self {
             fltk_app: app::App::default(),
-            db: Connection::open(DB_PATH).unwrap(),
+            db: Connection::open(db_path).unwrap(),
             sender: a,
             receiver: b,
         }
     }
 
-
     fn construct(&mut self) -> () {
-
         // create main window
         Window::default()
             .with_size(800, 600)
@@ -56,50 +56,50 @@ impl AppContext {
             .with_id("main_window");
 
         // create a tree on the left to allow selecting creation templates
-        Tree::default()
-            .with_size(200, widget_from_id::<DoubleWindow>("main_window")
-                .unwrap()
-                .height()
+        let mut tree_object: Tree = Tree::default()
+            .with_size(
+                300,
+                widget_from_id::<DoubleWindow>("main_window")
+                    .unwrap()
+                    .height(),
             )
-            .with_label("tree")
             .with_id("main_window_tree");
-
-        println!("{:?}", widget_from_id::<Tree>("main_window_tree").unwrap().select_mode());
-
+        tree_object.set_item_draw_mode(TreeItemDrawMode::LabelAndWidget);
+        tree_object.set_show_root(false);
         // requires explicit 'end()' call to any 'group' types so we don't nest within this object
-        widget_from_id::<Tree>("main_window_tree")
-            .unwrap()
-            .end();
+        tree_object.end();
 
         // create 2nd window that houses the dynamic rebuildable widgets - right side of GUI
         Window::default()
-            .with_size( 
+            .with_size(
                 {
-                    let wind: DoubleWindow = widget_from_id::<DoubleWindow>("main_window")
-                        .unwrap();
-                    let tree: Tree = widget_from_id::<Tree>("main_window_tree")
-                        .unwrap();
-                    wind.width() - tree.width()
+                    let wind: DoubleWindow = widget_from_id::<DoubleWindow>("main_window").unwrap();
+                    wind.width() - tree_object.width()
                 },
                 widget_from_id::<DoubleWindow>("main_window")
                     .unwrap()
-                    .height()
+                    .height(),
             )
             .with_pos(
                 {
-                    let tree: Tree = widget_from_id::<Tree>("main_window_tree").unwrap();
-                    let x = tree.x() + tree.width();
+                    let x = tree_object.x() + tree_object.width();
                     x
                 },
-                widget_from_id::<Tree>("main_window_tree").unwrap().y()
+                tree_object.y(),
             )
             .with_label("Entity Content Creator")
             .with_id("sub_window");
-    
+
         let mut scroll: Scroll = Scroll::default()
             .with_size(
-                widget_from_id::<DoubleWindow>("sub_window").unwrap().width(),
-                widget_from_id::<DoubleWindow>("sub_window").unwrap().height() - 30)
+                widget_from_id::<DoubleWindow>("sub_window")
+                    .unwrap()
+                    .width(),
+                widget_from_id::<DoubleWindow>("sub_window")
+                    .unwrap()
+                    .height()
+                    - 30,
+            )
             .with_id("main_window_sub_window_scroll");
         scroll.set_frame(fltk::enums::FrameType::DownBox);
         scroll.end();
@@ -115,106 +115,75 @@ impl AppContext {
             .right_of(&widget_from_id::<Button>("create_new_button").unwrap(), 3)
             .with_id("setting_button")
             .with_label("Settings");
-        
 
         // done adding to the right side of the GUI
         widget_from_id::<DoubleWindow>("sub_window").unwrap().end();
-    
+
         // done adding to the main window
         widget_from_id::<DoubleWindow>("main_window").unwrap().end();
 
         let _ = self.load_items_into_tree(Vec::from(CREATION_CATEGORIES));
-        
-        let mut tree: Option<Tree> = widget_from_id::<Tree>("main_window_tree");
-        match t.as_mut() {
-            Some(t) => {
-                for x in 0..=20 {
-            
-                    let t: TreeItem = TreeItem::new(&t, &x.to_string()[..]);
-        
-                    add_child_treeitem(t, p, &tree);
-                }        
-
-            },
-            None => { },
-        }
-    
 
         let tree_sender: Sender<Message> = self.sender.clone();
 
-        widget_from_id::<Tree>("main_window_tree")
-            .unwrap()
-            .set_callback({move |t| {
-                match t.callback_reason() {
-                    TreeReason::None => {
-                    },
-                    TreeReason::Selected => { 
-                        tree_selected_callback(&tree_sender, &t);
-                    },
-                    TreeReason::Deselected => { 
-                    },
-                    TreeReason::Reselected => {
-                    },
-                    TreeReason::Opened => {
-                    },
-                    TreeReason::Closed => {
-                    },
-                    TreeReason::Dragged => {
-                    },
+        tree_object.set_callback({
+            move |t| match t.callback_reason() {
+                TreeReason::None => {}
+                TreeReason::Selected => {
+                    tree_selected_callback(&tree_sender, &t);
                 }
+                TreeReason::Deselected => {}
+                TreeReason::Reselected => {}
+                TreeReason::Opened => {}
+                TreeReason::Closed => {}
+                TreeReason::Dragged => {}
             }
         });
 
-        ()
+        build_out_creation_categories();
     }
 
-/*
-    fn gateway_to_fill_sub_window(
-        &mut self,
-        mut previous_coordinates: Option<(i32, i32)>,
-        selection: String,
-    ) -> () {
-    
-    
-        self.add_input_to_window(&mut previous_coordinates);
-        ()
-    }
- */
+    /*
+       fn gateway_to_fill_sub_window(
+           &mut self,
+           mut previous_coordinates: Option<(i32, i32)>,
+           selection: String,
+       ) -> () {
+
+
+           self.add_input_to_window(&mut previous_coordinates);
+           ()
+       }
+    */
 
     fn event_loop(&mut self) -> Result<(), ()> {
         while self.fltk_app.wait() {
-
             match self.receiver.recv() {
                 Some(Message::TreeSelection(s)) => {
                     match_tree_selection(s);
-                },
+                }
                 Some(Message::ClearSubWindow) => {
                     clear_sub_window_scroll();
                 }
-                None => { },
+                None => {}
             }
         }
 
         Ok(())
     }
 
-    fn load_items_into_tree(
-        &self,
-        items: Vec<&str>,
-    ) -> () {
+    fn load_items_into_tree(&self, items: Vec<&str>) -> () {
         let mut t: Option<Tree> = widget_from_id::<Tree>("main_window_tree");
 
         for x in items {
-
             match t.as_mut() {
                 Some(t) => {
                     t.add(x);
-                },
-                None => { },
+                }
+                None => {}
             }
         }
     }
-
 }
 
 #[derive(Default)]
@@ -223,16 +192,13 @@ struct RecordSet {
     headers: Headers,
 }
 
-
 struct Record {
     fields: Vec<SqlData>,
 }
 
 impl Record {
     fn new() -> Self {
-        Self {
-            fields: Vec::new(),
-        }
+        Self { fields: Vec::new() }
     }
 }
 
@@ -241,7 +207,6 @@ struct Headers {
     column_names: Vec<String>,
     column_count: usize,
 }
-
 
 enum SqlData {
     Null,
@@ -252,9 +217,7 @@ enum SqlData {
 }
 
 impl ToString for SqlData {
-    fn to_string(
-        &self,
-    ) -> String {
+    fn to_string(&self) -> String {
         match self {
             SqlData::Null => String::new(),
             SqlData::Integer(z) => z.to_string(),
@@ -265,10 +228,7 @@ impl ToString for SqlData {
     }
 }
 
-
-fn main(
-) -> Result<(), ()> {
-
+fn main() -> Result<(), ()> {
     entry_point()?;
     Ok(())
 }
@@ -290,7 +250,6 @@ fn load_db_into_tree(
 }
  */
 
-
 fn query(
     sqlite_connection: &Connection,
     query_str: &str,
@@ -306,54 +265,60 @@ fn query(
             let col_count: usize = r.column_count();
             let col_names: Vec<&str> = r.column_names();
 
-
             rs.headers.column_count = col_count;
             for x in col_names {
                 rs.headers.column_names.push(String::from(x));
             }
 
             // when iterating through the rows later, this is the function that each row will be passed into
-            let mut rows = r.query_map(params, |row| {
-                let mut v : Vec<rusqlite::types::Value> = Vec::with_capacity(rs.headers.column_count);
+            let mut rows = r
+                .query_map(params, |row| {
+                    let mut v: Vec<rusqlite::types::Value> =
+                        Vec::with_capacity(rs.headers.column_count);
 
-                for ind in 0..col_count  {
-                    v.push(row.get(ind).unwrap());
-                }
-                Ok(v)
-            }).unwrap();
+                    for ind in 0..col_count {
+                        v.push(row.get(ind).unwrap());
+                    }
+                    Ok(v)
+                })
+                .unwrap();
 
             while let Some(r) = rows.next() {
                 match r {
                     Ok(e) => {
                         let mut new_row: Record = Record::new();
                         for ind in 0..e.len() {
-
                             // get each field in this row and put it in the gd_recordset
                             // converting each SQLite value to a Godot equivalent
                             match &e[ind] {
-
-                                types::Value::Null =>                     { new_row.fields.push( SqlData::Null ) },
-                                types::Value::Integer(v_i64) =>     { new_row.fields.push( SqlData::Integer(v_i64.clone()) ) },
-                                types::Value::Real(v_f64) =>        { new_row.fields.push( SqlData::Real(v_f64.clone()) ) },
-                                types::Value::Text(v_string) =>  { new_row.fields.push( SqlData::Text(v_string.clone()) ) },
-                                types::Value::Blob(v_vec_u8) => { new_row.fields.push( SqlData::Blob( Vec::new() /* Vec::from(v_vec_u8[..])) */ ) ) },
+                                types::Value::Null => new_row.fields.push(SqlData::Null),
+                                types::Value::Integer(v_i64) => {
+                                    new_row.fields.push(SqlData::Integer(v_i64.clone()))
+                                }
+                                types::Value::Real(v_f64) => {
+                                    new_row.fields.push(SqlData::Real(v_f64.clone()))
+                                }
+                                types::Value::Text(v_string) => {
+                                    new_row.fields.push(SqlData::Text(v_string.clone()))
+                                }
+                                types::Value::Blob(v_vec_u8) => {
+                                    new_row.fields.push(SqlData::Blob(
+                                        Vec::new(), /* Vec::from(v_vec_u8[..])) */
+                                    ))
+                                }
                             }
                         }
                         rs.records.push(new_row);
-                    },
-                    Err(_) => {
-                    },
+                    }
+                    Err(_) => {}
                 }
             }
-        },
-        Err(_) => { 
-        },
+        }
+        Err(_) => {}
     };
 
     rs
 }
-
-
 
 /* This entire function is just stripped prototype code (that worked) from 'fn main()'
 // This code won't work on its own, need to provide a reference to Fltk App and resolve the image file loads
@@ -385,7 +350,7 @@ fn load_image(
     let mut new_png_img = fltk::image::PngImage::from_data(&bytes[..]);
     println!("png img loaded");
 
-    frame.draw(move |f| { 
+    frame.draw(move |f| {
         println!("frame drawing");
         new_img.scale(f.w(), f.h(), true, true);
         println!("frame scaled");
@@ -399,114 +364,146 @@ fn load_image(
 
 fn entry_point() -> Result<(), ()> {
     let mut f: AppContext = AppContext::new();
-    
     f.construct();
 
-    let mut mainwindow: Window = widget_from_id::<DoubleWindow>("main_window").unwrap();
-    mainwindow.show();
-
-    f.event_loop()
+    match widget_from_id::<DoubleWindow>("main_window") {
+        Some(mut mainwindow) => {
+            mainwindow.show();
+            f.event_loop()
+        }
+        None => Ok(()),
+    }
 }
 
-
-fn match_tree_selection(
-    s: String,
-) -> () {
-    println!("match tree selection");
+fn match_tree_selection(s: String) -> () {
     match &s[..] {
-        "Mob" => build_mob_gui(),
+        //        "Mob" => build_mob_gui(),
+        "Mob" => {
+            println!("entering 'mob' of match_tree_selection");
+            _on_select_fill_category_with_items();
+        }
         "Item" => build_item_gui(),
         "Static" => build_static_gui(),
-        _ => {},
+        _ => {
+            println!("entering _ of match_tree_selection");
+            _on_deselect_wipe_tree_items();
+        }
     };
-
-    ()
 }
 
-fn build_mob_gui(
-) -> () {
-    
+fn build_mob_gui() -> () {
     let scroll: Option<Scroll> = widget_from_id::<Scroll>("main_window_sub_window_scroll");
-    
+
     match scroll {
         Some(mut s) => {
             let mut previous_coordinates: Option<(i32, i32)> = None;
 
             let mut child_text_boxes: Vec<String> = Vec::new();
 
-            child_text_boxes.push(add_input_to_scroll(&mut s, &mut previous_coordinates, "Entity ID", "entity_id"));
-            child_text_boxes.push(add_input_to_scroll(&mut s, &mut previous_coordinates, "Entity Name", "entity_name"));
+            child_text_boxes.push(add_input_to_scroll(
+                &mut s,
+                &mut previous_coordinates,
+                "Entity ID",
+                "entity_id",
+            ));
+            child_text_boxes.push(add_input_to_scroll(
+                &mut s,
+                &mut previous_coordinates,
+                "Entity Name",
+                "entity_name",
+            ));
 
-            
             // make a bunch of test children
             for x in 0..100 {
                 let y: &str = &x.to_string()[..];
-                child_text_boxes.push(add_input_to_scroll(&mut s, &mut previous_coordinates, y, y ));
+                child_text_boxes.push(add_input_to_scroll(&mut s, &mut previous_coordinates, y, y));
             }
 
             autolayout_subwindow_scrollbox_gui(child_text_boxes);
 
             s.redraw();
-        },
+        }
         None => (),
     }
     ()
 }
 
-fn build_item_gui(
-) -> () {
+fn build_item_gui() -> () {
     let scroll: Option<Scroll> = widget_from_id::<Scroll>("main_window_sub_window_scroll");
-    
+
     match scroll {
         Some(mut s) => {
             let mut previous_coordinates: Option<(i32, i32)> = None;
-            
+
             let mut child_text_boxes: Vec<String> = Vec::new();
 
-            child_text_boxes.push(add_input_to_scroll(&mut s, &mut previous_coordinates, "Entity ID", "entity_id"));
-            child_text_boxes.push(add_input_to_scroll(&mut s, &mut previous_coordinates, "Entity Name", "entity_name"));
-            child_text_boxes.push(add_input_to_scroll(&mut s, &mut previous_coordinates, "Item Type", "item_type"));
+            child_text_boxes.push(add_input_to_scroll(
+                &mut s,
+                &mut previous_coordinates,
+                "Entity ID",
+                "entity_id",
+            ));
+            child_text_boxes.push(add_input_to_scroll(
+                &mut s,
+                &mut previous_coordinates,
+                "Entity Name",
+                "entity_name",
+            ));
+            child_text_boxes.push(add_input_to_scroll(
+                &mut s,
+                &mut previous_coordinates,
+                "Item Type",
+                "item_type",
+            ));
 
             autolayout_subwindow_scrollbox_gui(child_text_boxes);
 
             s.redraw();
-        },
+        }
         None => (),
     }
-    
+
     ()
 }
 
-fn build_static_gui(
-) -> () {
-        
+fn build_static_gui() -> () {
     match widget_from_id::<Scroll>("main_window_sub_window_scroll") {
         Some(mut s) => {
             let mut previous_coordinates: Option<(i32, i32)> = None;
 
             let mut child_text_boxes: Vec<String> = Vec::new();
 
-            child_text_boxes.push(add_input_to_scroll(&mut s, &mut previous_coordinates, "Entity ID", "entity_id"));
-            child_text_boxes.push(add_input_to_scroll(&mut s, &mut previous_coordinates, "Entity Name", "entity_name"));
+            child_text_boxes.push(add_input_to_scroll(
+                &mut s,
+                &mut previous_coordinates,
+                "Entity ID",
+                "entity_id",
+            ));
+            child_text_boxes.push(add_input_to_scroll(
+                &mut s,
+                &mut previous_coordinates,
+                "Entity Name",
+                "entity_name",
+            ));
 
             autolayout_subwindow_scrollbox_gui(child_text_boxes);
 
             s.redraw();
-        },
+        }
         None => (),
     }
-    
+
     ()
 }
 
-fn autolayout_subwindow_scrollbox_gui(
-    child_boxes: Vec<String>,
-) -> () {
-
+fn autolayout_subwindow_scrollbox_gui(child_boxes: Vec<String>) -> () {
     let mut largest: i32 = 0;
-    
+
     for x in &child_boxes {
-        find_largest_label(&mut largest, widget_from_id::<Input>(&x[..]).unwrap().measure_label())
+        find_largest_label(
+            &mut largest,
+            widget_from_id::<Input>(&x[..]).unwrap().measure_label(),
+        )
     }
 
     for x in &child_boxes {
@@ -537,9 +534,12 @@ fn add_input_to_scroll(
         .with_id(id);
 
     // align X to the previous input + the label width + padding from the edge of the scrollbox
-    input_one.set_pos(coords.0 + input_one.measure_label().0 + 3, coords.1 + input_one.height());
+    input_one.set_pos(
+        coords.0 + input_one.measure_label().0 + 3,
+        coords.1 + input_one.height(),
+    );
 
-    widget.add(&input_one);    
+    widget.add(&input_one);
     widget.end();
 
     *datum = Some((coords.0, coords.1 + input_one.height()));
@@ -547,26 +547,20 @@ fn add_input_to_scroll(
     String::from(id)
 }
 
-
-fn clear_sub_window_scroll(
-) -> () {
+fn clear_sub_window_scroll() -> () {
     let scroll: Option<Scroll> = widget_from_id::<Scroll>("main_window_sub_window_scroll");
     match scroll {
         Some(mut w) => {
             w.clear();
             w.redraw();
-        },
-        None => {},
+        }
+        None => {}
     }
 
     ()
 }
 
-
-fn find_largest_label(
-    largest: &mut i32,
-    label: (i32, i32),
-) -> () {
+fn find_largest_label(largest: &mut i32, label: (i32, i32)) -> () {
     if *largest < label.0 {
         *largest = label.0;
     }
@@ -574,48 +568,189 @@ fn find_largest_label(
     ()
 }
 
-
-fn slice_end_of_string(
-    s: String,
-) -> String {
+fn slice_end_of_string(s: String) -> String {
     let mut x: Vec<&str> = s.split("/").collect();
-    
+
     match x.pop() {
         Some(y) => y.to_string(),
         None => String::new(),
     }
 }
 
-
-fn tree_selected_callback(
-    tree_sender: &Sender<Message>,
-    t: &Tree,
-) -> () {
-
-    clear_sub_window_scroll();
-
+fn tree_selected_callback(tree_sender: &Sender<Message>, t: &Tree) -> () {
     match t.callback_item() {
-        Some(tree_item) => {
-            match t.item_pathname( &tree_item ) {
-                Ok( t ) => {
-                    tree_sender.send( Message::TreeSelection( slice_end_of_string( t ) ) );
-                },
-                Err( _ ) => { },
+        Some(tree_item) => match t.item_pathname(&tree_item) {
+            Ok(t) => {
+                tree_sender.send(Message::TreeSelection(slice_end_of_string(t)));
             }
+            Err(_) => {}
         },
-        None => { },
-    };
-
-    ()
+        None => {
+            clear_sub_window_scroll();
+        }
+    }
 }
 
+fn locate_cold_storage() -> PathBuf {
+    let t: Result<PathBuf, _> = current_dir();
 
-fn add_child_treeitem(
-    item: TreeItem,
-    parent: TreeItem,
-    tree: Tree,
-) -> Result<(), ()> {
+    match t {
+        Ok(p) => p,
+        Err(_) => PathBuf::new(),
+    }
+}
 
-    tree.add(item.path);
-    Ok(())
+fn print_tree_items(tree: &mut Tree) -> () {
+    match tree.get_items() {
+        Some(v) => {
+            for i in v {
+                match tree.item_pathname(&i) {
+                    Ok(s) => println!("item pathname: {}", s),
+                    Err(_) => println!("Can't find item pathname"),
+                }
+            }
+        }
+        None => {
+            println!("No items in tree");
+        }
+    };
+}
+
+fn print_all_tree_items() -> () {
+    let tree_object: Tree = widget_from_id::<Tree>("main_window_tree").unwrap();
+    match tree_object.find_item("Mob") {
+        Some(ti_mob) => {
+            for i in 0..=ti_mob.children() {
+                match ti_mob.child(i) {
+                    Some(ti) => {
+                        println!("tree_item: x: {}, y: {}", ti.x(), ti.y());
+                        match ti.try_widget() {
+                            Some(b) => println!(
+                                "input pos: x:{}, y:{} -- input size: w: {}, h: {}",
+                                b.x(),
+                                b.y(),
+                                b.w(),
+                                b.h()
+                            ),
+                            None => {
+                                println!("no button inner widget found")
+                            }
+                        }
+                    }
+                    None => {}
+                }
+            }
+        }
+        None => {}
+    }
+}
+
+fn _on_select_fill_category_with_items() -> () {
+    let mut tree_object: Tree = widget_from_id::<Tree>("main_window_tree").unwrap();
+    for x in 0..=20 {
+        let mut s: String = String::from("Mob");
+        s.push_str("/Mob");
+        s.push_str(&x.to_string()[..]);
+
+        let mut tree_item = TreeItem::new(&tree_object, &x.to_string()[..]);
+
+        tree_object.add_item(&s[..], &tree_item);
+        /*
+                let mut b: Input = Input::default()
+                    .with_size(120, tree_item.label_h())
+                    .with_label("test")
+                    .with_id(&s[..]);
+
+                b.set_value("WHERE AM I");
+        */
+    }
+}
+
+fn _on_deselect_wipe_tree_items() -> () {
+    match widget_from_id::<Tree>("main_window_tree") {
+        Some(tree) => match tree.get_selected_items() {
+            Some(v_ti) => {
+                for mut ti in v_ti {
+                    ti.clear_children();
+                }
+            }
+            None => {
+                println!(" nothing selected, unable to clear")
+            }
+        },
+        None => {}
+    }
+}
+
+fn build_out_creation_categories() -> () {
+    match widget_from_id::<Tree>("main_window_tree") {
+        Some(mut tree) => {
+            tree.begin();
+            let tree_root: TreeItem = tree.root().unwrap();
+            let count_of_children: i32 = tree_root.children();
+            for x in 0..count_of_children {
+                let child: TreeItem = tree_root.child(x).unwrap();
+                let new_tree_item: TreeItem = TreeItem::new(&tree, "ID");
+                let mut new_path: String = child.label().unwrap();
+                new_path.push_str("/");
+                new_path.push_str("ID");
+
+                match tree.add_item(&new_path, &new_tree_item) {
+                    Some(mut ti) => {
+                        println!(
+                            "before x {}, y {}, w {}, h {}",
+                            ti.label_x(),
+                            ti.label_y(),
+                            ti.label_w(),
+                            ti.label_h()
+                        );
+
+                        ti.set_label_size(ti.label_size() * 2);
+                        let mut hg: Pack = Pack::new(
+                            ti.label_x(),
+                            ti.label_h(),
+                            ti.label_w(),
+                            ti.label_h() * 2,
+                            "",
+                        );
+
+                        hg.set_frame(FrameType::ThinUpFrame);
+                        hg.set_color(Color::Black);
+
+                        hg.set_spacing(4);
+
+                        hg.add(&Button::new(
+                            hg.x(),
+                            hg.y(),
+                            hg.width(),
+                            hg.height(),
+                            "Test button",
+                        ));
+                        hg.add(&Button::new(
+                            hg.x(),
+                            hg.y(),
+                            hg.width(),
+                            hg.height(),
+                            "Test button 2",
+                        ));
+                        //                        hg.auto_layout();
+                        hg.end();
+                        ti.set_widget(&hg);
+                        println!(
+                            "after x {}, y {}, w {}, h {}",
+                            ti.label_x(),
+                            ti.label_y(),
+                            ti.label_w(),
+                            ti.label_h()
+                        );
+                    }
+                    None => {
+                        println!("Failed to add tree item");
+                    }
+                }
+            }
+            tree.end();
+        }
+        None => {}
+    }
 }
