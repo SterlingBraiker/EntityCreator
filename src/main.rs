@@ -2,6 +2,7 @@ use fltk::{
     button::Button,
     draw,
     enums::{Color, FrameType},
+    frame::Frame,
     group::{Pack, Scroll},
     input::Input,
     prelude::*,
@@ -30,6 +31,7 @@ struct AppContext {
 pub enum Message {
     TreeSelection(String),
     ClearSubWindow,
+    SearchEntities(TreeItem),
 }
 
 impl AppContext {
@@ -141,7 +143,7 @@ impl AppContext {
             }
         });
 
-        build_out_creation_categories();
+        build_out_creation_categories(self.sender.clone());
     }
 
     /*
@@ -165,6 +167,9 @@ impl AppContext {
                 }
                 Some(Message::ClearSubWindow) => {
                     clear_sub_window_scroll();
+                }
+                Some(Message::SearchEntities(t)) => {
+                    fetch_and_fill_entity_search(&self.db, t);
                 }
                 None => {}
             }
@@ -381,13 +386,12 @@ fn match_tree_selection(s: String) -> () {
         //        "Mob" => build_mob_gui(),
         "Mob" => {
             println!("entering 'mob' of match_tree_selection");
-            _on_select_fill_category_with_items();
+            _on_search_fill_category_with_items();
         }
         "Item" => build_item_gui(),
         "Static" => build_static_gui(),
         _ => {
             println!("entering _ of match_tree_selection");
-            _on_deselect_wipe_tree_items();
         }
     };
 }
@@ -593,10 +597,16 @@ fn tree_selected_callback(tree_sender: &Sender<Message>, t: &Tree) -> () {
 }
 
 fn locate_cold_storage() -> PathBuf {
-    let t: Result<PathBuf, _> = current_dir();
+    // need to understand where current_dir() is pointing to at runtime
+    //    let t: Result<PathBuf, _> = current_dir();
+    let t: Result<PathBuf, Error> = Ok(PathBuf::new());
 
     match t {
-        Ok(p) => p,
+        Ok(mut p) => {
+            p.push("C:\\Rust_Dev\\EntityCreator");
+            p.push("test_data");
+            p
+        }
         Err(_) => PathBuf::new(),
     }
 }
@@ -646,14 +656,14 @@ fn print_all_tree_items() -> () {
     }
 }
 
-fn _on_select_fill_category_with_items() -> () {
+fn _on_search_fill_category_with_items() -> () {
     let mut tree_object: Tree = widget_from_id::<Tree>("main_window_tree").unwrap();
     for x in 0..=20 {
         let mut s: String = String::from("Mob");
         s.push_str("/Mob");
         s.push_str(&x.to_string()[..]);
 
-        let mut tree_item = TreeItem::new(&tree_object, &x.to_string()[..]);
+        let tree_item = TreeItem::new(&tree_object, &x.to_string()[..]);
 
         tree_object.add_item(&s[..], &tree_item);
         /*
@@ -667,23 +677,19 @@ fn _on_select_fill_category_with_items() -> () {
     }
 }
 
-fn _on_deselect_wipe_tree_items() -> () {
+fn wipe_tree_items() -> () {
     match widget_from_id::<Tree>("main_window_tree") {
-        Some(tree) => match tree.get_selected_items() {
-            Some(v_ti) => {
-                for mut ti in v_ti {
-                    ti.clear_children();
-                }
-            }
-            None => {
-                println!(" nothing selected, unable to clear")
-            }
+        Some(tree) => match tree.get_items() {
+            Some(v_ti) => {}
+            None => {}
         },
-        None => {}
+        None => {
+            println!("unable to find tree object");
+        }
     }
 }
 
-fn build_out_creation_categories() -> () {
+fn build_out_creation_categories(app_sender: Sender<Message>) -> () {
     match widget_from_id::<Tree>("main_window_tree") {
         Some(mut tree) => {
             tree.begin();
@@ -691,7 +697,8 @@ fn build_out_creation_categories() -> () {
             let count_of_children: i32 = tree_root.children();
             for x in 0..count_of_children {
                 let child: TreeItem = tree_root.child(x).unwrap();
-                let mut new_tree_item: TreeItem = TreeItem::new(&tree, "ID");
+                let child_pathname: String = tree.item_pathname(&child).unwrap();
+                let mut new_tree_item: TreeItem = TreeItem::new(&tree, "quick_search");
 
                 new_tree_item.draw_item_content(|ti, render| {
                     println!("drawing custom item content");
@@ -714,7 +721,7 @@ fn build_out_creation_categories() -> () {
                                     match pack.child(i) {
                                         Some(mut child) => {
                                             child.set_pos(dims.0, dims.1);
-                                            child.set_size(dims.2 - 100, (dims.3 / 2));
+                                            child.set_size(dims.2 - 100, (dims.3 / 4));
                                             dims.1 += dims.3;
                                         }
                                         None => {}
@@ -730,11 +737,11 @@ fn build_out_creation_categories() -> () {
 
                 let mut new_path: String = child.label().unwrap();
                 new_path.push_str("/");
-                new_path.push_str("ID");
+                new_path.push_str("quick_search");
 
                 match tree.add_item(&new_path, &new_tree_item) {
                     Some(mut ti) => {
-                        ti.set_label_size(ti.label_size() * 2);
+                        ti.set_label_size(ti.label_size() * 4);
 
                         let mut hg: Pack = Pack::new(
                             ti.label_x(),
@@ -746,9 +753,46 @@ fn build_out_creation_categories() -> () {
 
                         hg.set_frame(FrameType::ThinUpFrame);
 
-                        hg.add(&Input::new(hg.x(), hg.y(), hg.width(), hg.height(), ""));
+                        hg.add(&Frame::new(
+                            hg.x(),
+                            hg.y(),
+                            hg.width(),
+                            hg.height(),
+                            "Quick Lookup",
+                        ));
 
                         hg.add(&Input::new(hg.x(), hg.y(), hg.width(), hg.height(), ""));
+                        let mut button_id: String = String::from(child_pathname);
+                        button_id.push_str("_search_button");
+
+                        let mut button: Button =
+                            Button::new(hg.x(), hg.y(), hg.width(), hg.height(), "Search")
+                                .with_id(&button_id[..]);
+
+                        let tree_item: TreeItem = ti.clone();
+                        let app_sender_clone: Sender<Message> = app_sender.clone();
+
+                        button.set_callback(move |_| {
+                            let tree_item: TreeItem = tree_item.clone();
+                            app_sender_clone.send(Message::SearchEntities(tree_item))
+                        });
+
+                        hg.add(&button);
+
+                        button_id = String::from(child_pathname);
+                        button_id.push_str("_cancel_button");
+
+                        button = Button::new(hg.x(), hg.y(), hg.width(), hg.height(), "Clear");
+
+                        let tree_item: TreeItem = ti.clone();
+                        let app_sender_clone: Sender<Message> = app_sender.clone();
+
+                        button.set_callback(move |_| {
+                            let tree_item: TreeItem = tree_item.clone();
+                            app_sender_clone.send(Message::SearchEntities(tree_item))
+                        });
+                        hg.add(&button);
+
                         hg.end();
                         ti.set_widget(&hg);
                     }
@@ -760,5 +804,45 @@ fn build_out_creation_categories() -> () {
             tree.end();
         }
         None => {}
+    }
+}
+
+fn fetch_and_fill_entity_search(c: &Connection, t: TreeItem) -> () {
+    let r: RecordSet = fetch_entity_base_data(c);
+    fill_tree_with_entity_data(r, t);
+
+    ()
+}
+
+fn fetch_entity_base_data(conn: &Connection) -> RecordSet {
+    let rs = query(
+        conn,
+        "SELECT 'e'.'entity_base_id', 'e'.'name' FROM 'entity_base_definitions' as 'e';",
+        &[],
+    );
+
+    rs
+}
+
+fn fill_tree_with_entity_data(rs: RecordSet, ti: TreeItem) -> () {
+    let mut t: Tree = ti.tree().unwrap();
+    println!("entering fill_tree_with_entity_data");
+    t.clear_children(&ti);
+
+    t.redraw();
+    for row in rs.records {
+        println!("looping thru rows");
+        let fields: (String, String) = (row.fields[0].to_string(), row.fields[1].to_string());
+
+        let mut new_ti_path: String = String::new();
+        let ti_path: String = t.item_pathname(&ti).unwrap();
+        new_ti_path.push_str(&ti_path[..]);
+        new_ti_path.push('/');
+        new_ti_path.push_str(&fields.0.to_string()[..]);
+        new_ti_path.push(':');
+        new_ti_path.push_str(&fields.1.to_string()[..]);
+        t.add(&new_ti_path[..]);
+
+        ()
     }
 }
