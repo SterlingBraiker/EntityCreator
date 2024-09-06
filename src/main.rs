@@ -1,24 +1,26 @@
 use fltk::{
     button::Button,
     draw,
-    enums::{Color, Event, FrameType},
+    enums::{Color, Event, FrameType, Shortcut},
     frame::Frame,
     group::{Pack, Scroll},
     input::Input,
+    menu::{MenuBar, MenuFlag, MenuItem},
     prelude::*,
-    tree::{Tree, TreeItem, TreeReason},
+    tree::{Tree, TreeItem},
     window::{DoubleWindow, Window},
     {
         app,
         app::{channel, widget_from_id, Receiver, Sender},
     },
 };
+
 use rusqlite::*;
 use std::env;
 use std::env::current_dir;
-use std::path::PathBuf;
+use std::fs;
+use std::{path, path::PathBuf};
 
-const CREATION_CATEGORIES: [&str; 3] = ["Mob", "Item", "Static"];
 const DB_PATH: &str = "cold_storage.db";
 
 struct AppContext {
@@ -30,10 +32,10 @@ struct AppContext {
 
 #[derive(Clone)]
 pub enum Message {
-    TreeSelection(String),
     ClearSubWindow,
     SearchEntities(TreeItem),
     ClearEntities(TreeItem),
+    EntityFrameClicked(String),
 }
 
 impl AppContext {
@@ -55,10 +57,13 @@ impl AppContext {
     fn construct(&mut self) -> () {
         // create main window
         Window::default()
-            .with_size(800, 600)
+            .with_size(1280, 720)
             .center_screen()
             .with_label("Entity Content Creator")
             .with_id("main_window");
+
+        let mut menu: MenuBar = MenuBar::default().with_size(1280, 35);
+        let _ = menu.add("Options", Shortcut::None, MenuFlag::Normal, menu_options);
 
         // create a tree on the left to allow selecting creation templates
         let mut tree_object: Tree = Tree::default()
@@ -68,6 +73,7 @@ impl AppContext {
                     .unwrap()
                     .height(),
             )
+            .below_of(&menu, 3)
             .with_id("main_window_tree");
 
         tree_object.set_show_root(false);
@@ -127,23 +133,9 @@ impl AppContext {
         // done adding to the main window
         widget_from_id::<DoubleWindow>("main_window").unwrap().end();
 
-        let _ = self.load_items_into_tree(Vec::from(CREATION_CATEGORIES));
-
-        let tree_sender: Sender<Message> = self.sender.clone();
-
-        tree_object.set_callback({
-            move |t| match t.callback_reason() {
-                TreeReason::None => {}
-                TreeReason::Selected => {
-                    tree_selected_callback(&tree_sender, &t);
-                }
-                TreeReason::Deselected => {}
-                TreeReason::Reselected => {}
-                TreeReason::Opened => {}
-                TreeReason::Closed => {}
-                TreeReason::Dragged => {}
-            }
-        });
+        let _ = self.load_items_into_tree(fetch_entity_categories(&self.db));
+        // omit for testing alternative methods of filling scroll GUI
+        //        let tree_sender: Sender<Message> = self.sender.clone();
 
         build_out_creation_categories(self.sender.clone());
     }
@@ -164,17 +156,19 @@ impl AppContext {
     fn event_loop(&mut self) -> Result<(), ()> {
         while self.fltk_app.wait() {
             match self.receiver.recv() {
-                Some(Message::TreeSelection(s)) => {
-                    //match_tree_selection(s); //  refactor this to wipe the sub window in some other way
-                }
                 Some(Message::ClearSubWindow) => {
                     clear_sub_window_scroll();
                 }
                 Some(Message::SearchEntities(t)) => {
                     fetch_and_fill_entity_search(&self, t);
                 }
-                Some(Message::ClearEntities(t)) => {
-                    clear_entities_from_tree(&t);
+                Some(Message::ClearEntities(mut t)) => {
+                    clear_entities_from_tree(&mut t);
+                }
+                Some(Message::EntityFrameClicked(s)) => {
+                    if !s.is_empty() {
+                        self.build_and_fill_scroll_gui(s);
+                    }
                 }
                 None => {}
             }
@@ -183,13 +177,13 @@ impl AppContext {
         Ok(())
     }
 
-    fn load_items_into_tree(&self, items: Vec<&str>) -> () {
+    fn load_items_into_tree(&self, items: Vec<String>) -> () {
         let mut t: Option<Tree> = widget_from_id::<Tree>("main_window_tree");
 
         // load items into root tree item and close them by pathname
         for x in items {
             match t.as_mut() {
-                Some(t) => match t.add(x) {
+                Some(t) => match t.add(&x[..]) {
                     Some(ti) => match t.item_pathname(&ti) {
                         Ok(ti_pn) => match t.close(&ti_pn[..], false) {
                             Ok(_) => (),
@@ -203,14 +197,23 @@ impl AppContext {
             }
         }
     }
+
+    fn build_and_fill_scroll_gui(&self, s: String) -> () {
+        let eid: String = slice_beginning_of_string(s, ":");
+
+        let mut rs: RecordSet = fetch_entity_information(&self.db, eid);
+        build_scroll_gui(&rs);
+        fill_scroll_gui(&mut rs);
+    }
 }
 
-#[derive(Default)]
+#[derive(Default, Clone)]
 struct RecordSet {
     records: Vec<Record>,
     headers: Headers,
 }
 
+#[derive(Clone)]
 struct Record {
     fields: Vec<SqlData>,
 }
@@ -221,12 +224,13 @@ impl Record {
     }
 }
 
-#[derive(Default)]
+#[derive(Default, Clone)]
 struct Headers {
     column_names: Vec<String>,
     column_count: usize,
 }
 
+#[derive(Clone)]
 enum SqlData {
     Null,
     Integer(i64),
@@ -397,21 +401,7 @@ fn entry_point() -> Result<(), ()> {
     }
 }
 
-fn match_tree_selection(s: String) -> () {
-    match &s[..] {
-        //        "Mob" => build_mob_gui(),
-        "Mob" => {
-            _on_search_fill_category_with_items();
-        }
-        "Item" => build_item_gui(),
-        "Static" => build_static_gui(),
-        _ => {
-            println!("entering _ of match_tree_selection");
-        }
-    };
-}
-
-fn build_mob_gui(s: String) -> () {
+fn build_scroll_gui(rs: &RecordSet) -> () {
     let scroll: Option<Scroll> = widget_from_id::<Scroll>("main_window_sub_window_scroll");
 
     match scroll {
@@ -420,22 +410,17 @@ fn build_mob_gui(s: String) -> () {
             let mut previous_coordinates: Option<(i32, i32)> = None;
 
             let mut child_text_boxes: Vec<String> = Vec::new();
-
-            child_text_boxes.push(add_input_to_scroll(
-                &mut s,
-                &mut previous_coordinates,
-                "Entity ID",
-                "entity_id",
-            ));
-            child_text_boxes.push(add_input_to_scroll(
-                &mut s,
-                &mut previous_coordinates,
-                "Entity Name",
-                "entity_name",
-            ));
+            for header in &rs.headers.column_names {
+                child_text_boxes.push(add_input_to_scroll(
+                    &mut s,
+                    &mut previous_coordinates,
+                    &header[..],
+                    &header[..],
+                ));
+            }
 
             // make a bunch of test children
-            for x in 0..100 {
+            for x in 0..5 {
                 let y: &str = &x.to_string()[..];
                 child_text_boxes.push(add_input_to_scroll(&mut s, &mut previous_coordinates, y, y));
             }
@@ -449,69 +434,20 @@ fn build_mob_gui(s: String) -> () {
     ()
 }
 
-fn build_item_gui() -> () {
-    let scroll: Option<Scroll> = widget_from_id::<Scroll>("main_window_sub_window_scroll");
+fn fill_scroll_gui(rs: &mut RecordSet) -> () {
+    let fields: Vec<String> = match rs.records.pop() {
+        Some(r) => r.fields.iter().map(|x| x.to_string()).collect(),
+        None => return (),
+    };
 
-    match scroll {
-        Some(mut s) => {
-            let mut previous_coordinates: Option<(i32, i32)> = None;
-
-            let mut child_text_boxes: Vec<String> = Vec::new();
-
-            child_text_boxes.push(add_input_to_scroll(
-                &mut s,
-                &mut previous_coordinates,
-                "Entity ID",
-                "entity_id",
-            ));
-            child_text_boxes.push(add_input_to_scroll(
-                &mut s,
-                &mut previous_coordinates,
-                "Entity Name",
-                "entity_name",
-            ));
-            child_text_boxes.push(add_input_to_scroll(
-                &mut s,
-                &mut previous_coordinates,
-                "Item Type",
-                "item_type",
-            ));
-
-            autolayout_subwindow_scrollbox_gui(child_text_boxes);
-
-            s.redraw();
+    for index in 0..rs.headers.column_count {
+        match rs.headers.column_names.get(index) {
+            Some(header) => match widget_from_id::<Input>(&header[..]) {
+                Some(mut input_box) => input_box.set_value(&fields.get(index).unwrap()),
+                None => (),
+            },
+            None => (),
         }
-        None => (),
-    }
-
-    ()
-}
-
-fn build_static_gui() -> () {
-    match widget_from_id::<Scroll>("main_window_sub_window_scroll") {
-        Some(mut s) => {
-            let mut previous_coordinates: Option<(i32, i32)> = None;
-
-            let mut child_text_boxes: Vec<String> = Vec::new();
-
-            child_text_boxes.push(add_input_to_scroll(
-                &mut s,
-                &mut previous_coordinates,
-                "Entity ID",
-                "entity_id",
-            ));
-            child_text_boxes.push(add_input_to_scroll(
-                &mut s,
-                &mut previous_coordinates,
-                "Entity Name",
-                "entity_name",
-            ));
-
-            autolayout_subwindow_scrollbox_gui(child_text_boxes);
-
-            s.redraw();
-        }
-        None => (),
     }
 
     ()
@@ -589,8 +525,8 @@ fn find_largest_label(largest: &mut i32, label: (i32, i32)) -> () {
     ()
 }
 
-fn slice_end_of_string(s: String) -> String {
-    let mut x: Vec<&str> = s.split("/").collect();
+fn slice_end_of_string(s: String, delim: &str) -> String {
+    let mut x: Vec<&str> = s.split(delim).collect();
 
     match x.pop() {
         Some(y) => y.to_string(),
@@ -598,15 +534,12 @@ fn slice_end_of_string(s: String) -> String {
     }
 }
 
-fn tree_selected_callback(tree_sender: &Sender<Message>, t: &Tree) -> () {
-    match t.callback_item() {
-        Some(tree_item) => match t.item_pathname(&tree_item) {
-            Ok(t) => {
-                tree_sender.send(Message::TreeSelection(slice_end_of_string(t)));
-            }
-            Err(_) => {}
-        },
-        None => (),
+fn slice_beginning_of_string(s: String, delim: &str) -> String {
+    let mut x: Vec<&str> = s.split(delim).collect();
+    x.reverse();
+    match x.pop() {
+        Some(y) => y.to_string(),
+        None => String::new(),
     }
 }
 
@@ -830,9 +763,18 @@ fn fetch_and_fill_entity_search(c: &AppContext, t: TreeItem) -> () {
     };
 
     let input_value: String = b.value();
+    let parent: TreeItem = match t.parent() {
+        Some(tree_item) => tree_item,
+        None => return (),
+    };
+
+    let selected_string: String = parent.label().unwrap_or(String::new());
+
+    let x: String = slice_beginning_of_string(selected_string, "/");
+
     let r: RecordSet = match input_value.len() {
-        0 => fetch_all_entity_base_data(&c.db),
-        _ => fetch_specific_entity_base_data(input_value, &c.db),
+        0 => fetch_all_entity_base_data(&c.db, x),
+        _ => fetch_specific_entity_base_data(input_value, &c.db, x),
     };
 
     fill_tree_with_entity_data(r, t, c);
@@ -840,36 +782,57 @@ fn fetch_and_fill_entity_search(c: &AppContext, t: TreeItem) -> () {
     ()
 }
 
-fn fetch_all_entity_base_data(conn: &Connection) -> RecordSet {
-    let rs = query(
-        conn,
-        "SELECT 'e'.'entity_base_id', 'e'.'name' FROM 'entity_base_definitions' as 'e';",
-        &[],
-    );
+fn fetch_entity_categories(conn: &Connection) -> Vec<String> {
+    let rs = query(conn, "SELECT name FROM entity_core_types;", &[]);
+
+    let v: Vec<String> = rs
+        .records
+        .iter()
+        .map(|x| match x.fields.len() {
+            0 => String::new(),
+            _ => x.fields[0].to_string(),
+        })
+        .collect();
+    v
+}
+
+// create a SQL statement to build out the Scroll widget with entity information
+fn fetch_entity_information(conn: &Connection, eid: String) -> RecordSet {
+    let x: &[(&str, &dyn ToSql)] = named_params! { ":eid": eid };
+    let rs: RecordSet = query(conn, "SELECT 'e'.'entity_base_id', 'e'.'name', 'e'.'entity_core_type_id', 'e'.'entity_sub_type_id' FROM 'entity_base_definitions' as 'e' WHERE 'e'.'entity_base_id' = :eid;", &x);
 
     rs
 }
 
-fn fetch_specific_entity_base_data(v: String, conn: &Connection) -> RecordSet {
-    let x: &[(&str, &dyn ToSql)] = named_params! { ":ead": v };
+fn fetch_all_entity_base_data(conn: &Connection, ect: String) -> RecordSet {
+    let x: &[(&str, &dyn ToSql)] = named_params! { ":ect": ect };
     let rs = query(
         conn,
-        "SELECT 'e'.'entity_base_id', 'e'.'name' FROM 'entity_base_definitions' as 'e' WHERE 'e'.'entity_base_id' = :ead",
+        "SELECT 'e'.'entity_base_id', 'e'.'name' FROM 'entity_base_definitions' as 'e' WHERE 'e'.'entity_core_type_id' IN (SELECT 'e'.'entity_core_type_id' FROM 'entity_core_types' as 'e' WHERE 'e'.'name' = :ect);",
         &x,
     );
 
     rs
 }
 
-fn fill_tree_with_entity_data(rs: RecordSet, ti: TreeItem, c: &AppContext) -> () {
-    let mut t: Tree;
+fn fetch_specific_entity_base_data(v: String, conn: &Connection, ect: String) -> RecordSet {
+    let x: &[(&str, &dyn ToSql)] = named_params! { ":ead": v, ":ect": ect };
+    let rs = query(
+        conn,
+        "SELECT 'e'.'entity_base_id', 'e'.'name' FROM 'entity_base_definitions' as 'e' WHERE 'e'.'entity_base_id' = :ead AND 'e'.'entity_core_type_id' IN (SELECT 'e'.'entity_core_type_id' FROM 'entity_core_types' as 'e' WHERE 'e'.'name' = :ect)",
+        &x,
+    );
 
-    match ti.tree() {
-        Some(x) => t = x,
+    rs
+}
+
+fn fill_tree_with_entity_data(rs: RecordSet, mut ti: TreeItem, c: &AppContext) -> () {
+    let mut t: Tree = match ti.tree() {
+        Some(x) => x,
         None => return (),
-    }
+    };
 
-    clear_entities_from_tree(&ti);
+    clear_entities_from_tree(&mut ti);
     t.begin();
 
     for row in rs.records {
@@ -902,7 +865,6 @@ fn fill_tree_with_entity_data(rs: RecordSet, ti: TreeItem, c: &AppContext) -> ()
                         let mut frame: Frame = unsafe { frame.into_widget::<Frame>() };
                         frame.set_pos(dims.0, dims.1);
                         frame.set_size(dims.2, dims.3);
-                        frame.do_callback();
                     }
                     None => (),
                 }
@@ -924,9 +886,11 @@ fn fill_tree_with_entity_data(rs: RecordSet, ti: TreeItem, c: &AppContext) -> ()
 
                 ti.set_widget(&f);
 
-                f.handle(|f, event| match event {
+                let sender: Sender<_> = c.sender.clone();
+
+                f.handle(move |f_self, event| match event {
                     Event::Released => {
-                        build_mob_gui(f.label());
+                        sender.send(Message::EntityFrameClicked(f_self.label()));
                         true
                     }
                     _ => false,
@@ -934,48 +898,11 @@ fn fill_tree_with_entity_data(rs: RecordSet, ti: TreeItem, c: &AppContext) -> ()
             }
             None => (),
         };
-        // add a frame to live inside each tree_item to handle callbacks
-
-        /*
-
-            println!("drawing custom item content");
-            let dims: (i32, i32, i32, i32) =
-                (ti.label_x(), ti.label_y(), ti.label_w(), ti.label_h());
-            // If the widget is visible 'render'
-            if render {
-                match ti.try_widget() {
-                    Some(pack) => {
-                        // fetch the nested widget out of TreeItem and cast it to a Pack
-                        let mut pack: Pack = unsafe { pack.into_widget::<Pack>() };
-                        pack.set_pos(dims.0, dims.1);
-                        pack.set_size(dims.2, dims.3);
-
-                        let mut dims: (i32, i32, i32, i32) =
-                            (pack.x(), pack.y(), pack.w(), pack.h());
-                        pack.set_color(Color::Gray0);
-
-                        for i in 0..pack.children() {
-                            match pack.child(i) {
-                                Some(mut child) => {
-                                    child.set_pos(dims.0, dims.1);
-                                    child.set_size(dims.2 - 100, (dims.3 / 4));
-                                    dims.1 += dims.3;
-                                }
-                                None => {}
-                            }
-                        }
-                    }
-                    None => {}
-                }
-            };
-            let (label_w, _): (i32, i32) = draw::measure(&ti.label().unwrap()[..], true);
-            return dims.0 + label_w;
-        })        */
     }
     t.end();
 }
 
-fn clear_entities_from_tree(ti: &TreeItem) -> () {
+fn clear_entities_from_tree(ti: &mut TreeItem) -> () {
     let mut t: Tree;
 
     match ti.tree() {
@@ -983,9 +910,142 @@ fn clear_entities_from_tree(ti: &TreeItem) -> () {
         None => return (),
     }
 
-    t.clear_children(&ti);
+    for i in 0..ti.children() {
+        match ti.child(i) {
+            //            Some(mut child_ti) => child_ti.delete(),
+            Some(child_ti) => {
+                match child_ti.try_widget() {
+                    Some(w) => {
+                        let wi: Option<Frame> = fltk::prelude::WidgetBase::from_dyn_widget(&w);
+                        match wi {
+                            Some(f) => WidgetBase::delete(f),
+                            None => (),
+                        }
+                    }
+                    None => (),
+                };
+            }
+            None => (),
+        }
+    }
+    ti.clear_children();
 
     t.redraw();
 
     return ();
+}
+
+fn menu_options(_: &mut MenuBar) -> () {
+    let menu: MenuItem = MenuItem::new(&["Regen Enums"]);
+    if app::event_mouse_button() == app::MouseButton::Left {
+        let coords = app::event_coords();
+        match menu.popup(coords.0, coords.1) {
+            None => (),
+            Some(v) => match &v.label().unwrap()[..] {
+                "Regen Enums" => regen_enums(),
+                _ => println!("Failed to match in menu_options"),
+            },
+        }
+    }
+}
+
+fn regen_enums() -> () {
+    // untested workflow, may need to redo the workflow for capitalizing
+    let mut enum_package: String = String::new();
+    // println!("entering regen_enums");
+    let mut db_path = locate_cold_storage();
+
+    db_path.push(DB_PATH);
+
+    let db: Connection = match Connection::open(db_path) {
+        Ok(c) => {
+            println!("Successfully opened connection");
+            c
+        }
+        Err(_) => {
+            println!("failed to open connection");
+            return ();
+        }
+    };
+    let rs_enum_tables: RecordSet = fetch_enum_tables(&db);
+    //print_recordset_debug(rs_enum_tables.clone());
+    for mut enum_rows in rs_enum_tables.records {
+        match enum_rows.fields.pop() {
+            Some(f) => {
+                // println!("looping through enum table names");
+                // "entity_actions" -> Vec["entity","actions"]
+                let enum_lowercase: Vec<String> = f
+                    .to_string()
+                    .split("_")
+                    .map(|s| s.to_string())
+                    .collect::<Vec<String>>();
+                let mut enum_capitalized: Vec<String> = Vec::new();
+
+                // "entity" -> "Entity"
+                for x in &enum_lowercase {
+                    let first: String = x[0..1].to_uppercase();
+                    let rest: String = String::from(&x[1..]);
+                    enum_capitalized.push(String::from(Vec::from([first, rest]).join("")));
+                }
+                let rs_enum_data: RecordSet = fetch_enum_values_from_table(&db, f.to_string());
+                // begin adding new enum type
+                enum_package.push_str("\nenum ");
+                //print_recordset_debug(rs_enum_data);
+                enum_package.push_str(&String::from(enum_capitalized.join(""))[..]);
+                enum_package.push_str("{\n");
+
+                for row in rs_enum_data.records {
+                    let mut fields: Vec<SqlData> = row.fields;
+                    let type_name: String = fields.pop().unwrap().to_string();
+                    let type_value: String = fields.pop().unwrap().to_string();
+                    enum_package.push_str("\t");
+                    enum_package.push_str(&type_name[..]);
+                    enum_package.push_str(" = ");
+                    enum_package.push_str(&type_value[..]);
+                    enum_package.push_str(",\n");
+                }
+                enum_package.push_str("}\n");
+            }
+            None => (),
+        }
+    }
+    let _ = write_enums_to_file(enum_package);
+}
+
+fn fetch_enum_tables(db: &Connection) -> RecordSet {
+    let sql: String = String::from("SELECT 'e'.'table' FROM 'enums' as 'e';");
+    query(&db, &sql[..], &[])
+}
+
+fn fetch_enum_values_from_table(db: &Connection, t: String) -> RecordSet {
+    let sql: String = Vec::from(&[
+        "SELECT 'x'.'_rowid_', 'x'.'name' FROM '",
+        &t[..],
+        "' as 'x' ORDER BY 'x'.'_rowid_' ASC;",
+    ])
+    .join("");
+    //println!("sql is: {}", &sql[..]);
+    query(&db, &sql[..], &[])
+}
+
+fn print_recordset_debug(r: RecordSet) -> () {
+    //println!("headers: {}", r.headers.column_count);
+    for x in r.headers.column_names {
+        println!("header name: {}", x);
+    }
+
+    //println!("records: {}", r.records.len());
+    for x in r.records {
+        let x_displayed: Vec<String> = x
+            .fields
+            .into_iter()
+            .map(|e| e.to_string())
+            .collect::<Vec<String>>();
+        println!(" rec: {:?}", x_displayed);
+    }
+}
+
+fn write_enums_to_file(s: String) -> std::io::Result<()> {
+    fs::write("enums.gd", s.as_bytes())?;
+    Ok(())
 }
