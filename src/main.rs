@@ -11,17 +11,16 @@ use fltk::{
     window::{DoubleWindow, Window},
     {
         app,
-        app::{channel, widget_from_id, Receiver, Sender},
+        app::{channel, delete_widget, widget_from_id, Receiver, Sender},
     },
 };
 
+use native_dialog::FileDialog;
 use rusqlite::*;
 use std::env;
 use std::env::current_dir;
 use std::fs;
-use std::{path, path::PathBuf};
-
-const DB_PATH: &str = "cold_storage.db";
+use std::path::PathBuf;
 
 struct AppContext {
     fltk_app: fltk::app::App,
@@ -32,7 +31,6 @@ struct AppContext {
 
 #[derive(Clone)]
 pub enum Message {
-    ClearSubWindow,
     SearchEntities(TreeItem),
     ClearEntities(TreeItem),
     EntityFrameClicked(String),
@@ -40,9 +38,10 @@ pub enum Message {
 
 impl AppContext {
     fn new() -> Self {
-        let mut db_path = locate_cold_storage();
-
-        db_path.push(DB_PATH);
+        let db_path = match locate_cold_storage() {
+            Some(path_buf) => path_buf,
+            None => PathBuf::new(),
+        };
 
         let (a, b) = channel::<Message>();
 
@@ -56,7 +55,7 @@ impl AppContext {
 
     fn construct(&mut self) -> () {
         // create main window
-        Window::default()
+        let main_window: DoubleWindow = Window::default()
             .with_size(1280, 720)
             .center_screen()
             .with_label("Entity Content Creator")
@@ -81,19 +80,14 @@ impl AppContext {
         tree_object.end();
 
         // create 2nd window that houses the dynamic rebuildable widgets - right side of GUI
-        Window::default()
+        let sub_window: DoubleWindow = Window::default()
             .with_size(
-                {
-                    let wind: DoubleWindow = widget_from_id::<DoubleWindow>("main_window").unwrap();
-                    wind.width() - tree_object.width()
-                },
-                widget_from_id::<DoubleWindow>("main_window")
-                    .unwrap()
-                    .height(),
+                main_window.width() - tree_object.width(),
+                main_window.height(),
             )
             .with_pos(
                 {
-                    let x = tree_object.x() + tree_object.width();
+                    let x: i32 = tree_object.x() + tree_object.width();
                     x
                 },
                 tree_object.y(),
@@ -102,19 +96,11 @@ impl AppContext {
             .with_id("sub_window");
 
         let mut scroll: Scroll = Scroll::default()
-            .with_size(
-                widget_from_id::<DoubleWindow>("sub_window")
-                    .unwrap()
-                    .width(),
-                widget_from_id::<DoubleWindow>("sub_window")
-                    .unwrap()
-                    .height()
-                    - 30,
-            )
+            .with_size(sub_window.width(), sub_window.height() - 30)
             .with_id("main_window_sub_window_scroll");
         scroll.set_frame(fltk::enums::FrameType::DownBox);
-        scroll.end();
 
+        scroll.end();
         Button::default()
             .with_size(80, 20)
             .below_of(&scroll, 3)
@@ -126,7 +112,6 @@ impl AppContext {
             .right_of(&widget_from_id::<Button>("create_new_button").unwrap(), 3)
             .with_id("setting_button")
             .with_label("Settings");
-
         // done adding to the right side of the GUI
         widget_from_id::<DoubleWindow>("sub_window").unwrap().end();
 
@@ -140,25 +125,9 @@ impl AppContext {
         build_out_creation_categories(self.sender.clone());
     }
 
-    /*
-       fn gateway_to_fill_sub_window(
-           &mut self,
-           mut previous_coordinates: Option<(i32, i32)>,
-           selection: String,
-       ) -> () {
-
-
-           self.add_input_to_window(&mut previous_coordinates);
-           ()
-       }
-    */
-
     fn event_loop(&mut self) -> Result<(), ()> {
         while self.fltk_app.wait() {
             match self.receiver.recv() {
-                Some(Message::ClearSubWindow) => {
-                    clear_sub_window_scroll();
-                }
                 Some(Message::SearchEntities(t)) => {
                     fetch_and_fill_entity_search(&self, t);
                 }
@@ -200,10 +169,38 @@ impl AppContext {
 
     fn build_and_fill_scroll_gui(&self, s: String) -> () {
         let eid: String = slice_beginning_of_string(s, ":");
-
+        //println!("building and filling scroll gui");
         let mut rs: RecordSet = fetch_entity_information(&self.db, eid);
-        build_scroll_gui(&rs);
-        fill_scroll_gui(&mut rs);
+        let s: Option<Scroll> = widget_from_id::<Scroll>("main_window_sub_window_scroll");
+        match s {
+            Some(mut scroll) => {
+                println!("deleting children");
+                for x in (2..=(2 + scroll.children())).rev() {
+                    println!("scroll children: {}, x is {}", scroll.children(), x);
+                    let c: Option<fltk::widget::Widget> = scroll.child(x);
+                    println!("deleting child");
+                    match c {
+                        Some(w) => {
+                            println!("child removing");
+                            scroll.remove(&w);
+                            println!("child removed");
+                            println!("about to delete child");
+                            //fltk::prelude::WidgetBase::delete(w);
+                            delete_widget(w);
+                            println!("child deleted");
+                        }
+                        None => (),
+                    }
+                }
+                println!("flushing queue");
+                // flush the queue for deleting child widgets
+                fltk::app::awake();
+                println!("queue flushed");
+                build_scroll_gui(&rs, &mut scroll);
+                fill_scroll_gui(&mut rs);
+            }
+            None => (),
+        }
     }
 }
 
@@ -327,7 +324,7 @@ fn query(
                                 types::Value::Text(v_string) => {
                                     new_row.fields.push(SqlData::Text(v_string.clone()))
                                 }
-                                types::Value::Blob(v_vec_u8) => {
+                                types::Value::Blob(_v_vec_u8) => {
                                     new_row.fields.push(SqlData::Blob(
                                         Vec::new(), /* Vec::from(v_vec_u8[..])) */
                                     ))
@@ -346,48 +343,6 @@ fn query(
     rs
 }
 
-/* This entire function is just stripped prototype code (that worked) from 'fn main()'
-// This code won't work on its own, need to provide a reference to Fltk App and resolve the image file loads
-// as well as the img struct conversions
-fn load_image(
-) -> () {
-
-    let mut frame = Frame::default().with_size(360, 260).center_of(&wind);
-    let mut loaded_img: image::JpegImage = image::JpegImage::load("..\\test_data\\312-1.JPG").unwrap();
-    let mut new_img: image::BmpImage;
-    unsafe { new_img =  loaded_img.into_image::<image::BmpImage>(); }
-
-    let mut png_img_file = File::open("C:\\Users\\goomb\\Downloads\\Screenshot 2024-06-15 141905.png").unwrap();
-    let bytes: Vec<u8> = png_img_file.bytes().map(|x| x.unwrap()).collect();
-
-    let row_id = db.last_insert_rowid();
-
-    let mut blob = db.blob_open(DatabaseName::Main, "test_table", "content", row_id, false)?;
-
-    blob.seek(SeekFrom::Start(0)).unwrap_or(0);
-
-    let mut buf = [0u8; 242434];
-
-    let bytes_read = blob.read(&mut buf[..]).unwrap_or(0);
-    println!("bytes read: {}", bytes_read);
-
-
-    println!("png img about to load");
-    let mut new_png_img = fltk::image::PngImage::from_data(&bytes[..]);
-    println!("png img loaded");
-
-    frame.draw(move |f| {
-        println!("frame drawing");
-        new_img.scale(f.w(), f.h(), true, true);
-        println!("frame scaled");
-        new_img.draw(f.x() + 40, f.y(), f.w(), f.h());
-        println!("frame drewed");
-    });
-
-
-}
-*/
-
 fn entry_point() -> Result<(), ()> {
     let mut f: AppContext = AppContext::new();
     f.construct();
@@ -401,36 +356,19 @@ fn entry_point() -> Result<(), ()> {
     }
 }
 
-fn build_scroll_gui(rs: &RecordSet) -> () {
-    let scroll: Option<Scroll> = widget_from_id::<Scroll>("main_window_sub_window_scroll");
-
-    match scroll {
-        Some(mut s) => {
-            clear_sub_window_scroll();
-            let mut previous_coordinates: Option<(i32, i32)> = None;
-
-            let mut child_text_boxes: Vec<String> = Vec::new();
-            for header in &rs.headers.column_names {
-                child_text_boxes.push(add_input_to_scroll(
-                    &mut s,
-                    &mut previous_coordinates,
-                    &header[..],
-                    &header[..],
-                ));
-            }
-
-            // make a bunch of test children
-            for x in 0..5 {
-                let y: &str = &x.to_string()[..];
-                child_text_boxes.push(add_input_to_scroll(&mut s, &mut previous_coordinates, y, y));
-            }
-
-            autolayout_subwindow_scrollbox_gui(child_text_boxes);
-
-            s.redraw();
-        }
-        None => (),
+fn build_scroll_gui(rs: &RecordSet, scroll: &mut Scroll) -> () {
+    scroll.begin();
+    let mut pack: Pack = Pack::default_fill().with_id("ScrollPack");
+    pack.set_spacing(5);
+    // add new children
+    pack.begin();
+    for header in &rs.headers.column_names {
+        Input::default()
+            .with_size(pack.width(), 40)
+            .with_id(&header[..]);
     }
+    pack.end();
+    scroll.end();
     ()
 }
 
@@ -453,78 +391,7 @@ fn fill_scroll_gui(rs: &mut RecordSet) -> () {
     ()
 }
 
-fn autolayout_subwindow_scrollbox_gui(child_boxes: Vec<String>) -> () {
-    let mut largest: i32 = 0;
-
-    for x in &child_boxes {
-        find_largest_label(
-            &mut largest,
-            widget_from_id::<Input>(&x[..]).unwrap().measure_label(),
-        )
-    }
-
-    for x in &child_boxes {
-        let mut child: Input = widget_from_id::<Input>(&x[..]).unwrap();
-        child.set_pos(largest + 3, child.y());
-    }
-
-    ()
-}
-
-fn add_input_to_scroll(
-    widget: &mut Scroll,
-    datum: &mut Option<(i32, i32)>,
-    label: &str,
-    id: &str,
-) -> String {
-    let coords: (i32, i32) = match datum.as_ref() {
-        Some(x) => x.clone(),
-        None => (0, 0),
-    };
-
-    widget.begin();
-
-    let mut input_one: Input = Input::default()
-        .with_size(180, 30)
-        .with_pos(coords.0, coords.1)
-        .with_label(label)
-        .with_id(id);
-
-    // align X to the previous input + the label width + padding from the edge of the scrollbox
-    input_one.set_pos(
-        coords.0 + input_one.measure_label().0 + 3,
-        coords.1 + input_one.height(),
-    );
-
-    widget.add(&input_one);
-    widget.end();
-
-    *datum = Some((coords.0, coords.1 + input_one.height()));
-
-    String::from(id)
-}
-
-fn clear_sub_window_scroll() -> () {
-    let scroll: Option<Scroll> = widget_from_id::<Scroll>("main_window_sub_window_scroll");
-    match scroll {
-        Some(mut w) => {
-            w.clear();
-            w.redraw();
-        }
-        None => {}
-    }
-
-    ()
-}
-
-fn find_largest_label(largest: &mut i32, label: (i32, i32)) -> () {
-    if *largest < label.0 {
-        *largest = label.0;
-    }
-
-    ()
-}
-
+#[allow(dead_code)]
 fn slice_end_of_string(s: String, delim: &str) -> String {
     let mut x: Vec<&str> = s.split(delim).collect();
 
@@ -543,18 +410,23 @@ fn slice_beginning_of_string(s: String, delim: &str) -> String {
     }
 }
 
-fn locate_cold_storage() -> PathBuf {
-    let t: Result<PathBuf, _> = current_dir();
+fn locate_cold_storage() -> Option<PathBuf> {
+    let current_directory: PathBuf = match current_dir() {
+        Ok(p) => p,
+        Err(_) => return None,
+    };
 
-    match t {
-        Ok(mut p) => {
-            p.push("test_data");
-            p
-        }
-        Err(_) => PathBuf::new(),
+    match FileDialog::new()
+        .set_location(&current_directory)
+        .add_filter("DB", &["db"])
+        .show_open_single_file()
+    {
+        Ok(p) => p,
+        Err(_) => None,
     }
 }
 
+#[allow(dead_code)]
 fn print_tree_items(tree: &mut Tree) -> () {
     match tree.get_items() {
         Some(v) => {
@@ -571,6 +443,7 @@ fn print_tree_items(tree: &mut Tree) -> () {
     };
 }
 
+#[allow(dead_code)]
 fn print_all_tree_items() -> () {
     let tree_object: Tree = widget_from_id::<Tree>("main_window_tree").unwrap();
     match tree_object.find_item("Mob") {
@@ -652,7 +525,7 @@ fn build_out_creation_categories(app_sender: Sender<Message>) -> () {
                                     match pack.child(i) {
                                         Some(mut child) => {
                                             child.set_pos(dims.0, dims.1);
-                                            child.set_size(dims.2 - 100, (dims.3 / 4));
+                                            child.set_size(dims.2 - 100, dims.3 / 4);
                                             dims.1 += dims.3;
                                         }
                                         None => {}
@@ -912,19 +785,16 @@ fn clear_entities_from_tree(ti: &mut TreeItem) -> () {
 
     for i in 0..ti.children() {
         match ti.child(i) {
-            //            Some(mut child_ti) => child_ti.delete(),
-            Some(child_ti) => {
-                match child_ti.try_widget() {
-                    Some(w) => {
-                        let wi: Option<Frame> = fltk::prelude::WidgetBase::from_dyn_widget(&w);
-                        match wi {
-                            Some(f) => WidgetBase::delete(f),
-                            None => (),
-                        }
+            Some(child_ti) => match child_ti.try_widget() {
+                Some(w) => {
+                    let wi: Option<Frame> = fltk::prelude::WidgetBase::from_dyn_widget(&w);
+                    match wi {
+                        Some(f) => WidgetBase::delete(f),
+                        None => (),
                     }
-                    None => (),
-                };
-            }
+                }
+                None => (),
+            },
             None => (),
         }
     }
@@ -932,7 +802,7 @@ fn clear_entities_from_tree(ti: &mut TreeItem) -> () {
 
     t.redraw();
 
-    return ();
+    ()
 }
 
 fn menu_options(_: &mut MenuBar) -> () {
@@ -950,12 +820,11 @@ fn menu_options(_: &mut MenuBar) -> () {
 }
 
 fn regen_enums() -> () {
-    // untested workflow, may need to redo the workflow for capitalizing
     let mut enum_package: String = String::new();
-    // println!("entering regen_enums");
-    let mut db_path = locate_cold_storage();
-
-    db_path.push(DB_PATH);
+    let db_path = match locate_cold_storage() {
+        Some(path_buf) => path_buf,
+        None => return (),
+    };
 
     let db: Connection = match Connection::open(db_path) {
         Ok(c) => {
@@ -968,11 +837,9 @@ fn regen_enums() -> () {
         }
     };
     let rs_enum_tables: RecordSet = fetch_enum_tables(&db);
-    //print_recordset_debug(rs_enum_tables.clone());
     for mut enum_rows in rs_enum_tables.records {
         match enum_rows.fields.pop() {
             Some(f) => {
-                // println!("looping through enum table names");
                 // "entity_actions" -> Vec["entity","actions"]
                 let enum_lowercase: Vec<String> = f
                     .to_string()
@@ -990,7 +857,6 @@ fn regen_enums() -> () {
                 let rs_enum_data: RecordSet = fetch_enum_values_from_table(&db, f.to_string());
                 // begin adding new enum type
                 enum_package.push_str("\nenum ");
-                //print_recordset_debug(rs_enum_data);
                 enum_package.push_str(&String::from(enum_capitalized.join(""))[..]);
                 enum_package.push_str("{\n");
 
@@ -1028,6 +894,7 @@ fn fetch_enum_values_from_table(db: &Connection, t: String) -> RecordSet {
     query(&db, &sql[..], &[])
 }
 
+#[allow(dead_code)]
 fn print_recordset_debug(r: RecordSet) -> () {
     //println!("headers: {}", r.headers.column_count);
     for x in r.headers.column_names {

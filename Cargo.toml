@@ -6,3 +6,4 @@ edition = "2021"
 [dependencies]
 rusqlite = { version = "0.31.0", features = ["bundled", "blob"] }
 fltk = { version = "^1.4", features = ["fltk-bundled"] }
+native-dialog = "0.7.0"
