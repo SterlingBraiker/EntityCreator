@@ -1,11 +1,11 @@
 use fltk::{
-    button::Button,
+    button::{Button, CheckButton},
     draw,
     enums::{Color, Event, FrameType, Shortcut},
     frame::Frame,
-    group::{Pack, Scroll},
+    group::{Pack, PackType, Scroll},
     input::Input,
-    menu::{MenuBar, MenuFlag, MenuItem},
+    menu::{MenuBar, MenuFlag},
     prelude::*,
     tree::{Tree, TreeItem},
     window::{DoubleWindow, Window},
@@ -30,10 +30,13 @@ struct AppContext {
 }
 
 #[derive(Clone)]
-pub enum Message {
+enum Message {
     SearchEntities(TreeItem),
     ClearEntities(TreeItem),
     EntityFrameClicked(String),
+    UpdateCompLayers(CLPackage),
+    NewEntity(String),
+    UpdateEntity,
 }
 
 impl AppContext {
@@ -61,18 +64,28 @@ impl AppContext {
             .with_label("Entity Content Creator")
             .with_id("main_window");
 
+        let sender_clone: Sender<Message> = self.sender.clone();
         let mut menu: MenuBar = MenuBar::default().with_size(1280, 35);
-        let _ = menu.add("Options", Shortcut::None, MenuFlag::Normal, menu_options);
+        menu.add("Regen", Shortcut::None, MenuFlag::Normal, menu_regen);
+        menu.add("Settings", Shortcut::None, MenuFlag::Normal, menu_settings);
+        menu.add(
+            "Update Entity",
+            Shortcut::None,
+            MenuFlag::Normal,
+            move |_| {
+                sender_clone.send(Message::UpdateEntity);
+            },
+        );
+
+        let mut main_pack: Pack = Pack::default_fill()
+            .with_type(PackType::Horizontal)
+            .below_of(&menu, 5)
+            .with_id("main_pack");
+        main_pack.set_spacing(5);
 
         // create a tree on the left to allow selecting creation templates
         let mut tree_object: Tree = Tree::default()
-            .with_size(
-                300,
-                widget_from_id::<DoubleWindow>("main_window")
-                    .unwrap()
-                    .height(),
-            )
-            .below_of(&menu, 3)
+            .with_size(300, 0)
             .with_id("main_window_tree");
 
         tree_object.set_show_root(false);
@@ -80,48 +93,16 @@ impl AppContext {
         tree_object.end();
 
         // create 2nd window that houses the dynamic rebuildable widgets - right side of GUI
-        let sub_window: DoubleWindow = Window::default()
-            .with_size(
-                main_window.width() - tree_object.width(),
-                main_window.height(),
-            )
-            .with_pos(
-                {
-                    let x: i32 = tree_object.x() + tree_object.width();
-                    x
-                },
-                tree_object.y(),
-            )
-            .with_label("Entity Content Creator")
-            .with_id("sub_window");
-
-        let mut scroll: Scroll = Scroll::default()
-            .with_size(sub_window.width(), sub_window.height() - 30)
-            .with_id("main_window_sub_window_scroll");
-        scroll.set_frame(fltk::enums::FrameType::DownBox);
-
-        scroll.end();
-        Button::default()
-            .with_size(80, 20)
-            .below_of(&scroll, 3)
-            .with_id("create_new_button")
-            .with_label("Create New");
-
-        Button::default()
-            .with_size(80, 20)
-            .right_of(&widget_from_id::<Button>("create_new_button").unwrap(), 3)
-            .with_id("setting_button")
-            .with_label("Settings");
-        // done adding to the right side of the GUI
-        widget_from_id::<DoubleWindow>("sub_window").unwrap().end();
+        Scroll::default()
+            .with_size(main_pack.width() - tree_object.width(), 0)
+            .with_id("sub_pack_scroll");
 
         // done adding to the main window
-        widget_from_id::<DoubleWindow>("main_window").unwrap().end();
+
+        main_pack.end();
+        main_window.end();
 
         let _ = self.load_items_into_tree(fetch_entity_categories(&self.db));
-        // omit for testing alternative methods of filling scroll GUI
-        //        let tree_sender: Sender<Message> = self.sender.clone();
-
         build_out_creation_categories(self.sender.clone());
     }
 
@@ -134,10 +115,21 @@ impl AppContext {
                 Some(Message::ClearEntities(mut t)) => {
                     clear_entities_from_tree(&mut t);
                 }
-                Some(Message::EntityFrameClicked(s)) => {
-                    if !s.is_empty() {
-                        self.build_and_fill_scroll_gui(s);
-                    }
+                Some(Message::EntityFrameClicked(eid)) => {
+                    if let Ok(_) = build_scroll_gui(&self.sender, &eid, &self.db) {
+                        fill_scroll_gui(&eid, &self.db);
+                    };
+                }
+                Some(Message::UpdateCompLayers(c)) => {
+                    update_entity_comp_layers(&self.db, c);
+                }
+                Some(Message::NewEntity(eid)) => {
+                    if let Ok(_) = build_scroll_gui(&self.sender, &eid, &self.db) {
+                        new_entity(&self.db, &eid);
+                    };
+                }
+                Some(Message::UpdateEntity) => {
+                    update_entity(&self.db);
                 }
                 None => {}
             }
@@ -146,61 +138,16 @@ impl AppContext {
         Ok(())
     }
 
-    fn load_items_into_tree(&self, items: Vec<String>) -> () {
-        let mut t: Option<Tree> = widget_from_id::<Tree>("main_window_tree");
-
+    fn load_items_into_tree(&self, items: Vec<String>) -> Option<()> {
         // load items into root tree item and close them by pathname
-        for x in items {
-            match t.as_mut() {
-                Some(t) => match t.add(&x[..]) {
-                    Some(ti) => match t.item_pathname(&ti) {
-                        Ok(ti_pn) => match t.close(&ti_pn[..], false) {
-                            Ok(_) => (),
-                            Err(_) => (),
-                        },
-                        Err(_) => (),
-                    },
-                    None => (),
-                },
-                None => {}
+        if let Some(mut t_mut) = widget_from_id::<Tree>("main_window_tree") {
+            for x in items {
+                let tree_item: TreeItem = t_mut.add(&x[..])?;
+                let pn: String = get_pathname(&t_mut, &tree_item)?;
+                close_treeitem(&mut t_mut, pn);
             }
         }
-    }
-
-    fn build_and_fill_scroll_gui(&self, s: String) -> () {
-        let eid: String = slice_beginning_of_string(s, ":");
-        //println!("building and filling scroll gui");
-        let mut rs: RecordSet = fetch_entity_information(&self.db, eid);
-        let s: Option<Scroll> = widget_from_id::<Scroll>("main_window_sub_window_scroll");
-        match s {
-            Some(mut scroll) => {
-                println!("deleting children");
-                for x in (2..=(2 + scroll.children())).rev() {
-                    println!("scroll children: {}, x is {}", scroll.children(), x);
-                    let c: Option<fltk::widget::Widget> = scroll.child(x);
-                    println!("deleting child");
-                    match c {
-                        Some(w) => {
-                            println!("child removing");
-                            scroll.remove(&w);
-                            println!("child removed");
-                            println!("about to delete child");
-                            //fltk::prelude::WidgetBase::delete(w);
-                            delete_widget(w);
-                            println!("child deleted");
-                        }
-                        None => (),
-                    }
-                }
-                println!("flushing queue");
-                // flush the queue for deleting child widgets
-                fltk::app::awake();
-                println!("queue flushed");
-                build_scroll_gui(&rs, &mut scroll);
-                fill_scroll_gui(&mut rs);
-            }
-            None => (),
-        }
+        Some(())
     }
 }
 
@@ -233,7 +180,7 @@ enum SqlData {
     Integer(i64),
     Real(f64),
     Text(String),
-    Blob(Vec<u8>),
+    Blob(()),
 }
 
 impl ToString for SqlData {
@@ -246,6 +193,20 @@ impl ToString for SqlData {
             SqlData::Blob(_) => String::new(),
         }
     }
+}
+
+#[derive(Clone)]
+struct CLPackage {
+    cb_state: bool,
+    comp_id: String,
+    entity_id: String,
+}
+#[derive(Clone)]
+struct NPackage {
+    eid: String,
+    name: String,
+    ecid: String,
+    esid: String,
 }
 
 fn main() -> Result<(), ()> {
@@ -325,9 +286,7 @@ fn query(
                                     new_row.fields.push(SqlData::Text(v_string.clone()))
                                 }
                                 types::Value::Blob(_v_vec_u8) => {
-                                    new_row.fields.push(SqlData::Blob(
-                                        Vec::new(), /* Vec::from(v_vec_u8[..])) */
-                                    ))
+                                    new_row.fields.push(SqlData::Blob(()))
                                 }
                             }
                         }
@@ -356,39 +315,176 @@ fn entry_point() -> Result<(), ()> {
     }
 }
 
-fn build_scroll_gui(rs: &RecordSet, scroll: &mut Scroll) -> () {
-    scroll.begin();
-    let mut pack: Pack = Pack::default_fill().with_id("ScrollPack");
-    pack.set_spacing(5);
-    // add new children
-    pack.begin();
-    for header in &rs.headers.column_names {
-        Input::default()
-            .with_size(pack.width(), 40)
-            .with_id(&header[..]);
-    }
-    pack.end();
-    scroll.end();
-    ()
-}
+fn build_scroll_gui(
+    sender: &Sender<Message>,
+    eid: &String,
+    db: &Connection,
+) -> Result<(), FltkError> {
+    let hdrs: RecordSet = fetch_entity_information(db, &eid);
+    let mut comps: RecordSet = fetch_entity_comp_layers_general(db);
 
-fn fill_scroll_gui(rs: &mut RecordSet) -> () {
-    let fields: Vec<String> = match rs.records.pop() {
-        Some(r) => r.fields.iter().map(|x| x.to_string()).collect(),
-        None => return (),
+    // fetch the main canvas 'sub_pack_scroll'
+    let canvas: Scroll = match widget_from_id("sub_pack_scroll") {
+        Some(w) => w,
+        None => return Err(fltk::prelude::FltkError::Unknown(String::new())),
     };
 
-    for index in 0..rs.headers.column_count {
-        match rs.headers.column_names.get(index) {
-            Some(header) => match widget_from_id::<Input>(&header[..]) {
-                Some(mut input_box) => input_box.set_value(&fields.get(index).unwrap()),
-                None => (),
-            },
-            None => (),
+    // wipe out all the old contents from the scroll
+    if let Some(w) = widget_from_id::<Pack>("header_info_pack") {
+        delete_widget::<Pack>(w);
+    };
+
+    if let Some(w) = widget_from_id::<Pack>("comp_pack") {
+        delete_widget::<Pack>(w);
+    };
+
+    // begin building the scroll from scratch
+    canvas.begin();
+    let mut header_info_pack: Pack = Pack::new(canvas.x(), canvas.y(), 305, 300, "")
+        .with_type(PackType::Vertical)
+        .with_id("header_info_pack");
+    header_info_pack.set_spacing(5);
+
+    // add to the sub pack "header information" and "comp layers"
+    header_info_pack.begin();
+    let _: Frame = Frame::default()
+        .with_size(0, 35)
+        .with_label("Header Information");
+
+    for header in hdrs.headers.column_names.iter() {
+        let mut inner_pack: Pack = Pack::default()
+            .with_size(0, 35)
+            .with_type(PackType::Horizontal);
+
+        inner_pack.set_spacing(5);
+        inner_pack.begin();
+
+        let mut f: Frame = Frame::default().with_size(150, 0).with_label(&header[..]);
+        f.set_frame(FrameType::EngravedBox);
+
+        let _: Input = Input::default()
+            .with_size(header_info_pack.width() - f.width(), 0)
+            .with_id(&header[..]);
+        inner_pack.end();
+    }
+    header_info_pack.end();
+    header_info_pack.redraw();
+    // Done filling out header info
+
+    // Begin constructing comp layers
+    let mut comp_pack: Pack = Pack::new(canvas.x(), header_info_pack.y() + 5, 300, 700, "")
+        .with_type(PackType::Vertical)
+        .with_id("comp_pack")
+        .below_of(&header_info_pack, 5);
+    comp_pack.set_spacing(5);
+    comp_pack.begin();
+
+    {
+        // table headers for composition layers
+        let _: Frame = Frame::default()
+            .with_size(0, 35)
+            .with_label("Composition Layers");
+        let inner_pack: Pack = Pack::default()
+            .with_size(0, 40)
+            .with_type(PackType::Horizontal);
+        inner_pack.begin();
+        let mut f: Frame = Frame::default().with_size(50, 0).with_label("Comp ID");
+        f.set_frame(FrameType::EngravedBox);
+        let mut f: Frame = Frame::default().with_size(200, 0).with_label("Comp Name");
+        f.set_frame(FrameType::EngravedBox);
+        let mut f: Frame = Frame::default().with_size(50, 0).with_label("Activate");
+        f.set_frame(FrameType::EngravedBox);
+        inner_pack.end();
+    }
+
+    // getting all composition layer names for layout
+    for record in comps.records.iter_mut() {
+        // composition layer info
+        let comp_name: String = match record.fields.pop() {
+            Some(s) => s.to_string(),
+            None => String::new(),
+        };
+        let comp_id: String = match record.fields.pop() {
+            Some(i) => i.to_string(),
+            None => String::new(),
+        };
+        // and entity_base_id to be passed into checkbuttons
+
+        let mut inner_pack: Pack = Pack::default().with_size(0, 35).with_id(&comp_id[..]);
+        inner_pack.set_type(PackType::Horizontal);
+
+        inner_pack.begin();
+        let mut f: Frame = Frame::default().with_size(50, 0).with_label(&comp_id[..]);
+        f.set_frame(FrameType::EngravedBox);
+
+        let mut f: Frame = Frame::default()
+            .with_size(200, 0)
+            .with_label(&comp_name[..]);
+        f.set_frame(FrameType::EngravedBox);
+
+        let sender_clone: Sender<Message> = sender.clone();
+        let mut c: CheckButton = CheckButton::default().with_size(50, 0);
+        c.handle(move |b, event| {
+            match event {
+                Event::Released => {
+                    let eid: String = widget_from_id::<Input>("entity_base_id").unwrap().value();
+                    let c: CLPackage = CLPackage {
+                        cb_state: b.is_checked(),
+                        comp_id: comp_id.clone(),
+                        entity_id: eid,
+                    };
+                    // checkbox pushed, update the entity comp layer listings in coldstorage
+                    sender_clone.send(Message::UpdateCompLayers(c));
+                    // inform FLTK that we handled the event as 'TRUE'
+                    true
+                }
+                _ => false,
+            }
+        });
+        inner_pack.end();
+    }
+    comp_pack.end();
+    comp_pack.redraw();
+    // Done filling out comp layers
+
+    canvas.end();
+
+    Ok(())
+}
+
+fn fill_scroll_gui(eid: &String, db: &Connection) -> () {
+    let mut hdrs: RecordSet = fetch_entity_information(db, &eid);
+    let comps: RecordSet = fetch_entity_comp_layers_defs(db, &eid);
+
+    let mut fields: Vec<String> = Vec::new();
+
+    if let Some(r) = hdrs.records.pop() {
+        r.fields.iter().for_each(|x| fields.push(x.to_string()));
+    }
+
+    for index in 0..hdrs.headers.column_count {
+        if let Some(header) = hdrs.headers.column_names.get(index) {
+            if let Some(mut input_box) = widget_from_id::<Input>(&header[..]) {
+                input_box.set_value(&fields.get(index).unwrap());
+            }
         }
     }
 
-    ()
+    for record in comps.records {
+        let comp_id: String = match record.fields.get(0) {
+            Some(s) => s.to_string(),
+            None => String::new(),
+        };
+
+        let p: Pack = widget_from_id::<Pack>(&comp_id[..]).unwrap();
+        let cb = p.child(2).unwrap();
+        let wi: Option<CheckButton> = fltk::prelude::WidgetBase::from_dyn_widget(&cb);
+        wi.unwrap().set_checked(true);
+    }
+
+    widget_from_id::<Scroll>("sub_pack_scroll")
+        .unwrap()
+        .redraw();
 }
 
 #[allow(dead_code)]
@@ -510,31 +606,25 @@ fn build_out_creation_categories(app_sender: Sender<Message>) -> () {
                         (ti.label_x(), ti.label_y(), ti.label_w(), ti.label_h());
                     // If the widget is visible 'render'
                     if render {
-                        match ti.try_widget() {
-                            Some(pack) => {
-                                // fetch the nested widget out of TreeItem and cast it to a Pack
-                                let mut pack: Pack = unsafe { pack.into_widget::<Pack>() };
-                                pack.set_pos(dims.0, dims.1);
-                                pack.set_size(dims.2, dims.3);
+                        if let Some(pack) = ti.try_widget() {
+                            // fetch the nested widget out of TreeItem and cast it to a Pack
+                            let mut pack: Pack = unsafe { pack.into_widget::<Pack>() };
+                            pack.set_pos(dims.0, dims.1);
+                            pack.set_size(dims.2, dims.3);
 
-                                let mut dims: (i32, i32, i32, i32) =
-                                    (pack.x(), pack.y(), pack.w(), pack.h());
-                                pack.set_color(Color::Gray0);
+                            let mut dims: (i32, i32, i32, i32) =
+                                (pack.x(), pack.y(), pack.w(), pack.h());
+                            pack.set_color(Color::Gray0);
 
-                                for i in 0..pack.children() {
-                                    match pack.child(i) {
-                                        Some(mut child) => {
-                                            child.set_pos(dims.0, dims.1);
-                                            child.set_size(dims.2 - 100, dims.3 / 4);
-                                            dims.1 += dims.3;
-                                        }
-                                        None => {}
-                                    }
+                            for i in 0..pack.children() {
+                                if let Some(mut child) = pack.child(i) {
+                                    child.set_pos(dims.0, dims.1);
+                                    child.set_size(dims.2 - 100, dims.3 / pack.children());
+                                    dims.1 += dims.3;
                                 }
                             }
-                            None => {}
                         }
-                    };
+                    }
                     let (label_w, _): (i32, i32) = draw::measure(&ti.label().unwrap()[..], true);
                     return dims.0 + label_w;
                 });
@@ -545,7 +635,7 @@ fn build_out_creation_categories(app_sender: Sender<Message>) -> () {
 
                 match tree.add_item(&new_path, &new_tree_item) {
                     Some(mut ti) => {
-                        ti.set_label_size(ti.label_size() * 4);
+                        ti.set_label_size(ti.label_size() * 5);
 
                         let mut hg: Pack = Pack::new(
                             ti.label_x(),
@@ -570,7 +660,7 @@ fn build_out_creation_categories(app_sender: Sender<Message>) -> () {
                         button_id.push_str("_search_button");
 
                         let mut button: Button =
-                            Button::new(hg.x(), hg.y(), hg.width(), hg.height(), "Search")
+                            Button::new(hg.x(), hg.y(), hg.width(), hg.height(), "Search Entity")
                                 .with_id(&button_id[..]);
 
                         let tree_item: TreeItem = ti.clone();
@@ -586,7 +676,7 @@ fn build_out_creation_categories(app_sender: Sender<Message>) -> () {
                         button_id = String::from(child_pathname.clone());
                         button_id.push_str("_clear_button");
 
-                        button = Button::new(hg.x(), hg.y(), hg.width(), hg.height(), "Clear");
+                        button = Button::new(hg.x(), hg.y(), hg.width(), hg.height(), "Clear List");
 
                         let tree_item: TreeItem = ti.clone();
                         let app_sender_clone: Sender<Message> = app_sender.clone();
@@ -594,6 +684,26 @@ fn build_out_creation_categories(app_sender: Sender<Message>) -> () {
                         button.set_callback(move |_| {
                             let tree_item: TreeItem = tree_item.clone();
                             app_sender_clone.send(Message::ClearEntities(tree_item));
+                        });
+
+                        hg.add(&button);
+
+                        button_id = String::from(child_pathname.clone());
+                        button_id.push_str("_add_button");
+
+                        button = Button::new(hg.x(), hg.y(), hg.width(), hg.height(), "New Entity");
+
+                        let tree_item: TreeItem = ti.clone();
+                        let app_sender_clone: Sender<Message> = app_sender.clone();
+
+                        button.set_callback(move |_| {
+                            let tree_item: TreeItem = tree_item.clone();
+                            let eid: String = get_entity_id_from_tree(&tree_item);
+                            println!("entity id is: {} with length {}", eid, eid.len());
+                            match eid.len() {
+                                0 => return,
+                                _ => app_sender_clone.send(Message::NewEntity(eid)),
+                            }
                         });
 
                         hg.add(&button);
@@ -612,16 +722,16 @@ fn build_out_creation_categories(app_sender: Sender<Message>) -> () {
     }
 }
 
-fn fetch_and_fill_entity_search(c: &AppContext, t: TreeItem) -> () {
+fn get_entity_id_from_tree(t: &TreeItem) -> String {
     let p: Pack = match t.try_widget() {
         Some(w) => {
             let wi: Option<Pack> = fltk::prelude::WidgetBase::from_dyn_widget(&w);
             match wi {
                 Some(p) => p,
-                None => return,
+                None => return String::new(),
             }
         }
-        None => return,
+        None => return String::new(),
     };
 
     let b: Input = match p.child(1) {
@@ -629,13 +739,19 @@ fn fetch_and_fill_entity_search(c: &AppContext, t: TreeItem) -> () {
             let bi: Option<Input> = fltk::prelude::WidgetBase::from_dyn_widget(&b);
             match bi {
                 Some(wi) => wi,
-                None => return,
+                None => return String::new(),
             }
         }
-        None => return,
+        None => return String::new(),
     };
 
     let input_value: String = b.value();
+
+    input_value
+}
+
+fn fetch_and_fill_entity_search(c: &AppContext, t: TreeItem) -> () {
+    let input_value: String = get_entity_id_from_tree(&t);
     let parent: TreeItem = match t.parent() {
         Some(tree_item) => tree_item,
         None => return (),
@@ -670,7 +786,7 @@ fn fetch_entity_categories(conn: &Connection) -> Vec<String> {
 }
 
 // create a SQL statement to build out the Scroll widget with entity information
-fn fetch_entity_information(conn: &Connection, eid: String) -> RecordSet {
+fn fetch_entity_information(conn: &Connection, eid: &String) -> RecordSet {
     let x: &[(&str, &dyn ToSql)] = named_params! { ":eid": eid };
     let rs: RecordSet = query(conn, "SELECT 'e'.'entity_base_id', 'e'.'name', 'e'.'entity_core_type_id', 'e'.'entity_sub_type_id' FROM 'entity_base_definitions' as 'e' WHERE 'e'.'entity_base_id' = :eid;", &x);
 
@@ -699,6 +815,28 @@ fn fetch_specific_entity_base_data(v: String, conn: &Connection, ect: String) ->
     rs
 }
 
+fn fetch_entity_comp_layers_general(conn: &Connection) -> RecordSet {
+    let x: &[(&str, &dyn ToSql)] = &[];
+    let rs = query(
+        conn,
+        "SELECT entity_composition_layer_id, name FROM entity_composition_layers;",
+        &x,
+    );
+
+    rs
+}
+
+fn fetch_entity_comp_layers_defs(conn: &Connection, eid: &String) -> RecordSet {
+    let x: &[(&str, &dyn ToSql)] = named_params! { ":eid": eid };
+    let rs = query(
+        conn,
+        "SELECT 'e'.'entity_composition_layer_id' FROM 'entity_composition_layers_definitions' as 'e' WHERE 'e'.'entity_base_id' = :eid;",
+        &x,
+    );
+
+    rs
+}
+
 fn fill_tree_with_entity_data(rs: RecordSet, mut ti: TreeItem, c: &AppContext) -> () {
     let mut t: Tree = match ti.tree() {
         Some(x) => x,
@@ -708,7 +846,9 @@ fn fill_tree_with_entity_data(rs: RecordSet, mut ti: TreeItem, c: &AppContext) -
     clear_entities_from_tree(&mut ti);
     t.begin();
 
+    // for each matching entity found by the search
     for row in rs.records {
+        // ( entity_id, entity_name )
         let fields: (String, String) = (row.fields[0].to_string(), row.fields[1].to_string());
 
         let mut new_ti_path: String = String::new();
@@ -716,12 +856,7 @@ fn fill_tree_with_entity_data(rs: RecordSet, mut ti: TreeItem, c: &AppContext) -
         new_ti_path.push_str(&ti_path[..]);
         new_ti_path.push('/');
 
-        let mut new_ti_label: String = String::new();
-        new_ti_label.push_str(&fields.0.to_string()[..]);
-        new_ti_label.push(':');
-        new_ti_label.push_str(&fields.1.to_string()[..]);
-        new_ti_path.push_str(&new_ti_label[..]);
-
+        let new_ti_label: String = String::from_iter([&fields.0[..], ":", &fields.1[..]]);
         let mut new_tree_item: TreeItem = TreeItem::new(&t, &new_ti_label[..]);
 
         new_tree_item.draw_item_content(|tree_item, render| {
@@ -763,7 +898,10 @@ fn fill_tree_with_entity_data(rs: RecordSet, mut ti: TreeItem, c: &AppContext) -
 
                 f.handle(move |f_self, event| match event {
                     Event::Released => {
-                        sender.send(Message::EntityFrameClicked(f_self.label()));
+                        sender.send(Message::EntityFrameClicked(slice_beginning_of_string(
+                            f_self.label(),
+                            ":",
+                        )));
                         true
                     }
                     _ => false,
@@ -805,18 +943,45 @@ fn clear_entities_from_tree(ti: &mut TreeItem) -> () {
     ()
 }
 
-fn menu_options(_: &mut MenuBar) -> () {
-    let menu: MenuItem = MenuItem::new(&["Regen Enums"]);
-    if app::event_mouse_button() == app::MouseButton::Left {
-        let coords = app::event_coords();
-        match menu.popup(coords.0, coords.1) {
-            None => (),
-            Some(v) => match &v.label().unwrap()[..] {
-                "Regen Enums" => regen_enums(),
-                _ => println!("Failed to match in menu_options"),
-            },
-        }
+fn menu_regen(_: &mut MenuBar) -> () {
+    regen_enums();
+}
+
+fn menu_settings(_: &mut MenuBar) -> () {
+    ()
+}
+
+fn new_entity(db: &Connection, eid: &String) -> () {
+    match db.execute(
+        "INSERT INTO entity_base_definitions (
+        	entity_base_id
+        ) VALUES ( 
+        	?1
+        ) ON CONFLICT (entity_base_id) DO NOTHING;",
+        (eid,),
+    ) {
+        Ok(i) => println!("success, rows effected: {}", i),
+        Err(e) => println!("error with code {:?}", e),
+    };
+}
+
+fn update_entity(db: &Connection) -> () {
+    let mut eid: String = String::new();
+    if let Some(w) = widget_from_id::<Input>("entity_base_id") {
+        eid = w.value();
     }
+    let package: NPackage = fetch_header_data_from_gui(&eid);
+    match db.execute(
+        "UPDATE entity_base_definitions SET 
+        	name = ?2, 
+        	entity_core_type_id = ?3,
+        	entity_sub_type_id = ?4
+        WHERE entity_base_id = ?1;",
+        (&package.eid, &package.name, &package.ecid, &package.esid),
+    ) {
+        Ok(i) => println!("success, rows effected: {}", i),
+        Err(e) => println!("error with code {:?}", e),
+    };
 }
 
 fn regen_enums() -> () {
@@ -896,12 +1061,10 @@ fn fetch_enum_values_from_table(db: &Connection, t: String) -> RecordSet {
 
 #[allow(dead_code)]
 fn print_recordset_debug(r: RecordSet) -> () {
-    //println!("headers: {}", r.headers.column_count);
     for x in r.headers.column_names {
         println!("header name: {}", x);
     }
 
-    //println!("records: {}", r.records.len());
     for x in r.records {
         let x_displayed: Vec<String> = x
             .fields
@@ -915,4 +1078,66 @@ fn print_recordset_debug(r: RecordSet) -> () {
 fn write_enums_to_file(s: String) -> std::io::Result<()> {
     fs::write("enums.gd", s.as_bytes())?;
     Ok(())
+}
+
+fn close_treeitem(t: &mut Tree, pn: String) -> () {
+    let _ = t.close(&pn[..], false);
+}
+
+fn get_pathname(t: &Tree, ti: &TreeItem) -> Option<String> {
+    match t.item_pathname(&ti) {
+        Ok(pn) => Some(pn),
+        Err(_) => None,
+    }
+}
+
+fn update_entity_comp_layers(db: &Connection, package: CLPackage) -> () {
+    match package.cb_state {
+        true => {
+            // enable the composition layer
+            // INSERT .. ON CONFLICT DO NOTHING
+            match db.execute(
+                "INSERT INTO entity_composition_layers_definitions (
+                    entity_composition_layer_id, entity_base_id
+                ) values (
+                    ?1, ?2
+                ) ON CONFLICT(entity_base_id,entity_composition_layer_id) DO NOTHING;",
+                (&package.comp_id, &package.entity_id),
+            ) {
+                Ok(i) => println!("success, rows effected: {}", i),
+                Err(e) => println!("error with code {:?}", e),
+            }
+        }
+        false => {
+            // disable the composition layer
+            // DELETE ..
+            match db.execute(
+                "DELETE FROM entity_composition_layers_definitions WHERE entity_base_id = ?2 AND entity_composition_layer_id = ?1;",
+                (&package.comp_id, &package.entity_id),
+            ) {
+                Ok(i) => println!("success, rows effected: {}", i),
+                Err(e) => println!("error with code {:?}", e),
+            }
+        }
+    }
+
+    ()
+}
+
+fn fetch_header_data_from_gui(eid: &String) -> NPackage {
+    let eid: String = eid.clone();
+    let name: String = widget_from_id::<Input>("name").unwrap().value();
+    let ecid: String = widget_from_id::<Input>("entity_core_type_id")
+        .unwrap()
+        .value();
+    let esid: String = widget_from_id::<Input>("entity_sub_type_id")
+        .unwrap()
+        .value();
+
+    NPackage {
+        eid,
+        name,
+        ecid,
+        esid,
+    }
 }
